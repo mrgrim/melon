@@ -58,6 +58,11 @@ namespace melon::nbt
 
     list::~list()
     {
+        /*if (name == nullptr)
+            std::cout << "Deleting anonymous list." << std::endl;
+        else
+            std::cout << "Deleting list with name " << *name << std::endl;*/
+
         delete name;
     }
 
@@ -101,9 +106,11 @@ namespace melon::nbt
 
                 for (int32_t index = 0; index < count; index++)
                 {
-                    list tag_list = list();
-                    itr = tag_list.read(raw, itr, depth);
-                    lists.push_back(std::move(tag_list));
+                    //list tag_list = list();
+                    //std::cout << "Entering anonymous list." << std::endl;
+                    //itr = tag_list.read(raw, itr, depth);
+                    //std::cout << "Entering anonymous list." << std::endl;
+                    lists.emplace_back(depth, raw, &itr);
                 }
             }
             else if (tag_type == tag_compound)
@@ -112,9 +119,11 @@ namespace melon::nbt
 
                 for (int32_t index = 0; index < count; index++)
                 {
-                    compound tag_compound = compound();
-                    itr = tag_compound.read(raw, itr, depth, true);
-                    compounds.push_back(std::move(tag_compound));
+                    //compound tag_compound = compound();
+                    //std::cout << "Entering anonymous compound." << std::endl;
+                    //itr = tag_compound.read(raw, itr, depth, true);
+                    //std::cout << "Exiting anonymous compound." << std::endl;
+                    compounds.emplace_back(depth, raw, &itr, true);
                 }
             }
         }
@@ -125,25 +134,25 @@ namespace melon::nbt
             // C++14 guarantees the start address is the same across union members making a memcpy safe to do
             for (int32_t index = 0; index < count; index++)
             {
-                primitive_tag p_tag = { tag_type };
-                std::memcpy(reinterpret_cast<void *>(&(p_tag.value)), reinterpret_cast<void *>(itr), sizeof(p_tag.value));
+                uint64_t prim_value;
+                std::memcpy(reinterpret_cast<void *>(&prim_value), reinterpret_cast<void *>(itr), sizeof(prim_value));
 
                 // Change endianness based on type size to keep it to these 3 cases. The following code should compile
                 // away on big endian systems.
                 switch (tag_properties[tag_type].size)
                 {
                     case 2:
-                        *(reinterpret_cast<uint16_t *>(&(p_tag.value))) = cvt_endian(*(reinterpret_cast<uint16_t *>(&(p_tag.value))));
+                        *(reinterpret_cast<uint16_t *>(&prim_value)) = cvt_endian(*(reinterpret_cast<uint16_t *>(&prim_value)));
                         break;
                     case 4:
-                        *(reinterpret_cast<uint32_t *>(&(p_tag.value))) = cvt_endian(*(reinterpret_cast<uint32_t *>(&(p_tag.value))));
+                        *(reinterpret_cast<uint32_t *>(&prim_value)) = cvt_endian(*(reinterpret_cast<uint32_t *>(&prim_value)));
                         break;
                     case 8:
-                        *(reinterpret_cast<uint64_t *>(&(p_tag.value))) = cvt_endian(*(reinterpret_cast<uint64_t *>(&(p_tag.value))));
+                        prim_value = cvt_endian(prim_value);
                         break;
                 }
 
-                primitives.push_back(std::move(p_tag));
+                primitives.emplace_back(tag_type, prim_value);
                 itr += tag_properties[tag_type].size;
             }
         }
@@ -155,15 +164,16 @@ namespace melon::nbt
             {
                 for (int32_t index = 0; index < count; index++)
                 {
-                    primitive_tag p_tag = { tag_type };
-
                     // Reminder: NBT strings are "Modified UTF-8" and not null terminated.
                     // https://en.wikipedia.org/wiki/UTF-8#Modified_UTF-8
                     auto str_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
                     itr += 2;
 
-                    p_tag.value.tag_string = new std::string(reinterpret_cast<char *>(itr), str_len);
-                    primitives.push_back(std::move(p_tag));
+                    auto str = (char *)malloc(str_len + 1);
+                    std::memcpy((void *)str, (void *)itr, str_len);
+                    str[str_len] = 0;
+
+                    primitives.emplace_back(tag_type, (uint64_t)str);
                     itr += str_len;
                 }
             }
@@ -171,21 +181,21 @@ namespace melon::nbt
             {
                 for (int32_t index = 0; index < count; index++)
                 {
-                    primitive_tag p_tag = { tag_type };
-
                     auto array_len = cvt_endian(*(reinterpret_cast<int32_t *>(itr)));
                     itr += 4;
+
+                    void *array_ptr;
 
                     switch (tag_type)
                     {
                         case tag_byte_array:
-                            p_tag.value.tag_byte_array = read_tag_array<int8_t>(array_len, reinterpret_cast<void *>(itr));
+                            read_tag_array<int8_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
                             break;
                         case tag_int_array:
-                            p_tag.value.tag_int_array = read_tag_array<int32_t>(array_len, reinterpret_cast<void *>(itr));
+                            read_tag_array<int32_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
                             break;
                         case tag_long_array:
-                            p_tag.value.tag_long_array = read_tag_array<int64_t>(array_len, reinterpret_cast<void *>(itr));
+                            read_tag_array<int64_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
                             break;
                         default:
                             // Shouldn't be possible
@@ -193,7 +203,7 @@ namespace melon::nbt
                     }
 
                     itr += array_len * (tag_properties[tag_type].size * -1);
-                    primitives.push_back(std::move(p_tag));
+                    primitives.emplace_back(tag_type, (uint64_t)array_ptr);
                 }
             }
         }

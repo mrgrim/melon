@@ -54,6 +54,11 @@ namespace melon::nbt
 
     compound::~compound()
     {
+        /*if (name == nullptr)
+            std::cout << "Deleting anonymous compound." << std::endl;
+        else
+            std::cout << "Deleting compound with name " << *name << std::endl;*/
+
         delete name;
     }
 
@@ -80,7 +85,6 @@ namespace melon::nbt
         if (itr == nullptr) itr = raw->data();
         auto itr_start = itr;
         auto itr_end = raw->data() + raw->size();
-        uint16_t name_len;
 
         if (!skip_header)
         {
@@ -88,11 +92,12 @@ namespace melon::nbt
             if (static_cast<tag_type_enum>(*itr++) != tag_compound)
                 throw std::runtime_error("NBT Tag Type Not Compound.");
 
-            name_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
+            const auto name_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
             itr += 2;
 
             delete name;
             name = new std::string(reinterpret_cast<char *>(itr), name_len);
+
             itr += name_len;
         }
 
@@ -103,89 +108,132 @@ namespace melon::nbt
 
             if (tag_type == tag_end)
             {
+                //std::cout << "Found end tag." << std::endl;
                 break;
             }
 
-            name_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
+            const auto name_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
             itr += 2;
-
-            auto tag_name = std::string(reinterpret_cast<char *>(itr), name_len);
+            const auto name_ptr = itr;
             itr += name_len;
 
             if (tag_properties[tag_type].size == 127)
             {
-                itr -= name_len + 3;
+                itr -= 3 + name_len;
 
                 if (tag_type == tag_list)
                 {
-                    list tag_list = list();
-                    itr = tag_list.read(raw, itr, depth);
-
-                    lists.insert({ std::move(tag_name), std::move(tag_list) });
+                    //std::cout << "Found List " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << std::endl;
+                    lists.emplace(std::piecewise_construct,
+                                  std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
+                                  std::forward_as_tuple(depth, raw, &itr));
                 }
                 else if (tag_type == tag_compound)
                 {
-                    compound tag_compound = compound();
-                    itr = tag_compound.read(raw, itr, depth);
-
-                    compounds.insert({ std::move(tag_name), std::move(tag_compound) });
+                    //std::cout << "Found Compound " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << std::endl;
+                    compounds.emplace(std::piecewise_construct,
+                                      std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
+                                      std::forward_as_tuple(depth, raw, &itr));
                 }
             }
             else if (tag_properties[tag_type].size >= 0)
             {
+                uint64_t prim_value;
                 // C++14 guarantees the start address is the same across union members making a memcpy safe to do
                 // Always copy 8 bytes because it'll allow the memcpy to be inlined easily.
-                primitive_tag p_tag = { tag_type };
-                std::memcpy(reinterpret_cast<void *>(&(p_tag.value)), reinterpret_cast<void *>(itr), sizeof(p_tag.value));
+                std::memcpy(reinterpret_cast<void *>(&prim_value), reinterpret_cast<void *>(itr), sizeof(prim_value));
 
                 // Change endianness based on type size to keep it to these 3 cases. The following code should compile
                 // away on big endian systems.
                 switch (tag_properties[tag_type].size)
                 {
                     case 2:
-                        *(reinterpret_cast<uint16_t *>(&(p_tag.value))) = cvt_endian(*(reinterpret_cast<uint16_t *>(&(p_tag.value))));
+                        *(reinterpret_cast<uint16_t *>(&prim_value)) = cvt_endian(*(reinterpret_cast<uint16_t *>(&prim_value)));
                         break;
                     case 4:
-                        *(reinterpret_cast<uint32_t *>(&(p_tag.value))) = cvt_endian(*(reinterpret_cast<uint32_t *>(&(p_tag.value))));
+                        *(reinterpret_cast<uint32_t *>(&prim_value)) = cvt_endian(*(reinterpret_cast<uint32_t *>(&prim_value)));
                         break;
                     case 8:
-                        *(reinterpret_cast<uint64_t *>(&(p_tag.value))) = cvt_endian(*(reinterpret_cast<uint64_t *>(&(p_tag.value))));
+                        prim_value = cvt_endian(prim_value);
                         break;
                 }
 
-                primitives.insert({ std::move(tag_name), std::move(p_tag) });
+                /*switch (tag_type)
+                {
+                    case tag_byte:
+                        std::cout << "Found byte primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << +(*((uint8_t *)(&prim_value) + 7)) << std::endl;
+                        break;
+                    case tag_short:
+                        std::cout << "Found short primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((uint16_t *)(&prim_value) + 3) << std::endl;
+                        break;
+                    case tag_int:
+                        std::cout << "Found int primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((uint32_t *)(&prim_value) + 1) << std::endl;
+                        break;
+                    case tag_long:
+                        std::cout << "Found long primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((uint64_t *)(&prim_value)) << std::endl;
+                        break;
+                    case tag_float:
+                        std::cout << "Found float primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((float *)(&prim_value) + 1) << std::endl;
+                        break;
+                    case tag_double:
+                        std::cout << "Found double primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((double *)(&prim_value)) << std::endl;
+                        break;
+                }*/
+
+                primitives.emplace(std::piecewise_construct,
+                                   std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
+                                   std::forward_as_tuple(tag_type, *(reinterpret_cast<uint64_t *>(&prim_value))));
                 itr += tag_properties[tag_type].size;
             }
             else if (tag_properties[tag_type].size < 0)
             {
-                primitive_tag p_tag = { tag_type };
-
                 if (tag_type == tag_string)
                 {
                     // Reminder: NBT strings are "Modified UTF-8" and not null terminated.
                     // https://en.wikipedia.org/wiki/UTF-8#Modified_UTF-8
-                    auto str_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
+                    const auto str_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
                     itr += 2;
 
-                    p_tag.value.tag_string = new std::string(reinterpret_cast<char *>(itr), str_len);
-                    primitives.insert({ std::move(tag_name), std::move(p_tag) });
+                    auto str = (char *)malloc(str_len + 1);
+                    std::memcpy((void *)str, (void *)itr, str_len);
+                    str[str_len] = 0;
+
+                    //std::cout << "Read string " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << str << std::endl;
+                    primitives.emplace(std::piecewise_construct,
+                                       std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
+                                       std::forward_as_tuple(tag_type, (uint64_t)str));
                     itr += str_len;
                 }
                 else
                 {
-                    auto array_len = cvt_endian(*(reinterpret_cast<int32_t *>(itr)));
+                    const auto array_len = cvt_endian(*(reinterpret_cast<int32_t *>(itr)));
                     itr += 4;
+
+                    //std::cout << "Attempting array read of " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << " for " << array_len << " elements." << std::endl;
+                    void *array_ptr;
 
                     switch (tag_type)
                     {
                         case tag_byte_array:
-                            p_tag.value.tag_byte_array = read_tag_array<int8_t>(array_len, reinterpret_cast<void *>(itr));
+                            //std::cout << "Byte Array Processing." << std::endl;
+                            read_tag_array<int8_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
+                            //std::cout << "Read byte array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
+                            //for (int index = 0; index < array_len; index++) std::cout << +((int8_t *)(array_ptr))[index] << " ";
+                            //std::cout << std::endl;
                             break;
                         case tag_int_array:
-                            p_tag.value.tag_int_array = read_tag_array<int32_t>(array_len, reinterpret_cast<void *>(itr));
+                            //std::cout << "Int Array Processing." << std::endl;
+                            read_tag_array<int32_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
+                            //std::cout << "Read int array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
+                            //for (int index = 0; index < array_len; index++) std::cout << +((int32_t *)(array_ptr))[index] << " ";
+                            //std::cout << std::endl;
                             break;
                         case tag_long_array:
-                            p_tag.value.tag_long_array = read_tag_array<int64_t>(array_len, reinterpret_cast<void *>(itr));
+                            //std::cout << "Long Array Processing." << std::endl;
+                            read_tag_array<int64_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
+                            //std::cout << "Read long array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
+                            //for (int index = 0; index < array_len; index++) std::cout << +((int64_t *)(array_ptr))[index] << " ";
+                            //std::cout << std::endl;
                             break;
                         default:
                             // Shouldn't be possible
@@ -193,13 +241,15 @@ namespace melon::nbt
                     }
 
                     itr += array_len * (tag_properties[tag_type].size * -1);
-                    primitives.insert({ std::move(tag_name), std::move(p_tag) });
+                    primitives.emplace(std::piecewise_construct,
+                                       std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
+                                       std::forward_as_tuple(tag_type, (uint64_t)array_ptr));
                 }
             }
         }
 
         size = itr - itr_start;
-        if (depth == 1) std::cout << "Parsed " << size << " bytes of NBT data." << std::endl;
+        //if (depth == 1) std::cout << "Parsed " << size << " bytes of NBT data." << std::endl;
 
         if (depth == 1)
             return nullptr;

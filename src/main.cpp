@@ -19,28 +19,46 @@ int main() {
         return 1;
     }
 
-    std::cout << "Successfully read file off disk." << std::endl;
     auto end = std::chrono::high_resolution_clock::now();
-    std::cout << "Elapsed time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start) << std::endl;
+
+    std::cout << "Successfully read file off disk." << std::endl;
+    std::cout << "Elapsed time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - start) << std::endl;
+
+    start = std::chrono::high_resolution_clock::now();
 
     std::vector<uint8_t> nbt_data;
     if (!melon::util::gunzip(gz_buffer, &nbt_data))
     {
-        std::cout << "Successfully decompressed NBT data (" << nbt_data.size() << " bytes)." << std::endl;
         end = std::chrono::high_resolution_clock::now();
-        std::cout << "Elapsed time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start) << std::endl;
+        std::cout << "Successfully decompressed NBT data (" << nbt_data.size() << " bytes)." << std::endl;
+        std::cout << "Elapsed time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - start) << std::endl;
     }
     else
     {
         return 1;
     }
 
-    melon::nbt::compound parsed_nbt;
-    parsed_nbt.read(&nbt_data);
-    std::cout << "Successfully parsed NBT data." << std::endl;
+    auto *parsed_nbt = new melon::nbt::compound[10000];
 
-    end = std::chrono::high_resolution_clock::now();
-    std::cout << "Elapsed time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start) << std::endl;
+    try
+    {
+        start = std::chrono::high_resolution_clock::now();
+
+        for (int index = 0; index < 10000; index++)
+            parsed_nbt[0].read(&nbt_data);
+
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "Successfully parsed NBT data." << std::endl;
+
+        std::cout << "Elapsed time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - start) << std::endl;
+    }
+    catch (std::exception &e)
+    {
+        std::cerr << "Failed to parse NBT Data: " << e.what() << std::endl;
+    }
+
+    delete[] parsed_nbt;
+    std::cout << "Deleted parsed NBT." << std::endl;
 
     return 0;
 }
