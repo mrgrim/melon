@@ -11,46 +11,35 @@
 namespace melon::nbt
 {
 
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "bugprone-use-after-move"
     list::list(list &&in) noexcept
-            : name(in.name), type(in.type), count(in.count),
-              size(in.size), depth(in.depth), size_tracking(in.size_tracking),
+            : nbtcontainer(std::move(in)),
+              type(in.type), count(in.count),
               primitives(std::move(in.primitives)),
               compounds(std::move(in.compounds)),
               lists(std::move(in.lists))
     {
-        in.name = nullptr;
-
-        in.size          = 0;
-        in.depth         = 0;
-        in.size_tracking = 0;
+        in.type          = tag_end;
+        in.count         = 0;
     }
+#pragma clang diagnostic pop
 
     list &list::operator=(list &&in) noexcept
     {
         if (this != &in)
         {
-            delete name;
-            // Don't delete raw. Its lifetime is outside the scope of the nbt library.
-
-            name = in.name;
+            nbtcontainer::operator=(std::move(*this));
 
             type          = in.type;
             count         = in.count;
-            size          = in.size;
-            depth         = in.depth;
-            size_tracking = in.size_tracking;
 
             primitives = std::move(in.primitives);
             compounds  = std::move(in.compounds);
             lists      = std::move(in.lists);
 
-            in.name = nullptr;
-
             in.type          = tag_end;
             in.count         = 0;
-            in.size          = 0;
-            in.depth         = 0;
-            in.size_tracking = 0;
         }
 
         return *this;
@@ -58,22 +47,19 @@ namespace melon::nbt
 
     list::~list()
     {
-        /*if (name == nullptr)
+#if NBT_DEBUG == true
+        if (name == nullptr)
             std::cout << "Deleting anonymous list." << std::endl;
         else
-            std::cout << "Deleting list with name " << *name << std::endl;*/
-
-        delete name;
+            std::cout << "Deleting list with name " << *name << std::endl;
+#endif
     }
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "misc-no-recursion"
 
-    uint8_t *list::read(std::vector<uint8_t> *raw, uint8_t *itr, uint32_t depth_in, bool skip_header)
+    uint8_t *list::read(std::vector<uint8_t> *raw, uint8_t *itr, bool skip_header)
     {
-        depth = depth_in + 1;
-
-        if (depth > 512) throw std::runtime_error("NBT Tags Nested Too Deeply (>512).");
         if (itr == nullptr) throw std::runtime_error("NBT List Read called with NULL iterator.");
 
         auto itr_start = itr;
@@ -106,11 +92,13 @@ namespace melon::nbt
 
                 for (int32_t index = 0; index < count; index++)
                 {
-                    //list tag_list = list();
-                    //std::cout << "Entering anonymous list." << std::endl;
-                    //itr = tag_list.read(raw, itr, depth);
-                    //std::cout << "Entering anonymous list." << std::endl;
-                    lists.emplace_back(depth, raw, &itr);
+#if NBT_DEBUG == true
+                    std::cout << "Entering anonymous list." << std::endl;
+#endif
+                    lists.emplace_back(raw, &itr, static_cast<nbtcontainer *>(this));
+#if NBT_DEBUG == true
+                    std::cout << "Entering anonymous list." << std::endl;
+#endif
                 }
             }
             else if (tag_type == tag_compound)
@@ -119,11 +107,13 @@ namespace melon::nbt
 
                 for (int32_t index = 0; index < count; index++)
                 {
-                    //compound tag_compound = compound();
-                    //std::cout << "Entering anonymous compound." << std::endl;
-                    //itr = tag_compound.read(raw, itr, depth, true);
-                    //std::cout << "Exiting anonymous compound." << std::endl;
-                    compounds.emplace_back(depth, raw, &itr, true);
+#if NBT_DEBUG == true
+                    std::cout << "Entering anonymous compound." << std::endl;
+#endif
+                    compounds.emplace_back(raw, &itr, static_cast<nbtcontainer *>(this), true);
+#if NBT_DEBUG == true
+                    std::cout << "Exiting anonymous compound." << std::endl;
+#endif
                 }
             }
         }
@@ -211,5 +201,6 @@ namespace melon::nbt
         size = itr - itr_start;
         return itr;
     }
+
 #pragma clang diagnostic pop
 }

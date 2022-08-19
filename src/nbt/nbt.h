@@ -17,9 +17,13 @@
 #include <algorithm>
 #include <iostream>
 #include <stdlib.h>
+#include <tuple>
+#include <utility>
+#include <variant>
 
 namespace melon::nbt
 {
+    #define NBT_DEBUG false
 
     class list;
 
@@ -56,7 +60,7 @@ namespace melon::nbt
         ~primitive_tag();
 
         tag_type_enum tag_type;
-        uint32_t size;
+        uint32_t      size;
 
         explicit primitive_tag(tag_type_enum type_in, uint64_t value_in, uint32_t size_in = 1) // NOLINT(cppcoreguidelines-pro-type-member-init)
         {
@@ -78,15 +82,15 @@ namespace melon::nbt
             int32_t tag_int;
             int64_t tag_long;
 
-            float   tag_float;
-            double  tag_double;
+            float  tag_float;
+            double tag_double;
 
-            char    *tag_string;
+            char *tag_string;
 
             int8_t  *tag_byte_array;
             int32_t *tag_int_array;
             int64_t *tag_long_array;
-        } value;
+        }             value;
     };
 
     // Negative numbers represent element size for vector types
@@ -142,23 +146,67 @@ namespace melon::nbt
                 ((T *)(*dst))[index] = cvt_endian<T>(((T *)(*dst))[index]);
     }
 
-    class compound
+    class nbtcontainer
     {
     public:
         uint64_t    size  = 0;
         std::string *name = nullptr;
 
-        std::unordered_map<std::string, primitive_tag> primitives;
-        std::unordered_map<std::string, compound>      compounds;
-        std::unordered_map<std::string, list>          lists;
+        nbtcontainer() = delete;
+        [[deprecated("Use melon::nbt:compound instead")]] explicit nbtcontainer(std::vector<uint8_t> *, int64_t max_size_in = -1)
+                : depth_v(1), max_size(max_size_in)
+        {
+            throw std::runtime_error("Invalid initialization of nbtcontainer base class.");
+        }
 
-        explicit compound(int depth_in = 0)
-                : depth(depth_in)
+        nbtcontainer(const nbtcontainer &) = delete;
+        nbtcontainer &operator=(const nbtcontainer &) = delete;
+
+        nbtcontainer(nbtcontainer &&) noexcept;
+        nbtcontainer &operator=(nbtcontainer &&) noexcept;
+
+        [[nodiscard]] uint16_t depth() const
+        {
+            return depth_v;
+        }
+
+        virtual ~nbtcontainer();
+
+    protected:
+        explicit nbtcontainer(int64_t max_size_in = -1)
+                : depth_v(1), max_size(max_size_in)
         { }
 
-        explicit compound(int depth_in, std::vector<uint8_t> *raw_in, uint8_t **itr_in, bool skip_header = false)
+        explicit nbtcontainer(const nbtcontainer *const nbt_in)
+                : depth_v(nbt_in->depth_v + 1), max_size(nbt_in->max_size), size_tracking(nbt_in->size_tracking), parent(nbt_in->parent)
         {
-            *itr_in = read(raw_in, *itr_in, depth_in, skip_header);
+            if (depth_v > 512) throw std::runtime_error("NBT Tags Nested Too Deeply (>512).");
+        }
+
+        uint16_t           depth_v       = 0;
+        uint64_t           size_tracking = 0;
+        int64_t            max_size      = -1;
+        bool               readonly      = false;
+        const nbtcontainer *parent       = nullptr;
+    };
+
+    class compound : nbtcontainer
+    {
+    public:
+        explicit compound(int64_t max_size_in = -1)
+                : nbtcontainer(max_size_in)
+        { }
+
+        explicit compound(std::vector<uint8_t> *raw_in, int64_t max_size_in = -1)
+                : nbtcontainer(max_size_in)
+        {
+            read(raw_in, nullptr, false);
+        }
+
+        explicit compound(std::vector<uint8_t> *raw_in, uint8_t **itr_in, const nbtcontainer *const parent_in, bool skip_header = false)
+                : nbtcontainer(parent_in)
+        {
+            *itr_in = read(raw_in, *itr_in, skip_header);
         }
 
         compound(const compound &) = delete;
@@ -167,31 +215,41 @@ namespace melon::nbt
         compound(compound &&) noexcept;
         compound &operator=(compound &&) noexcept;
 
-        virtual ~compound();
-
-        uint8_t *read(std::vector<uint8_t> *raw_in, uint8_t *itr_in = nullptr, uint32_t depth_in = 0, bool skip_header = false);
-
+        ~compound() override;
     private:
-        uint16_t depth         = 0;
-        uint64_t size_tracking = 0;
-        bool     readonly      = false;
+        uint8_t *read(std::vector<uint8_t> *raw_in, uint8_t *itr = nullptr, bool skip_header = false);
+
+        friend class std::pair<std::string, compound>;
+
+        friend class std::unordered_map<std::string, compound>;
+
+        friend class std::piecewise_construct_t;
+
+        std::unordered_map<std::string, primitive_tag> primitives;
+        std::unordered_map<std::string, compound>      compounds;
+        std::unordered_map<std::string, list>          lists;
     };
 
-    class list
+    class list : nbtcontainer
     {
     public:
         tag_type_enum type  = tag_end;
         int32_t       count = 0;
-        uint64_t      size  = 0;
-        std::string   *name = nullptr;
 
-        explicit list(int depth_in = 0)
-                : depth(depth_in)
+        explicit list(int64_t max_size_in = -1)
+                : nbtcontainer(max_size_in)
         { }
 
-        explicit list(int depth_in, std::vector<uint8_t> *raw_in, uint8_t **itr_in, bool skip_header = false)
+        explicit list(std::vector<uint8_t> *raw_in, int64_t max_size_in = -1)
+                : nbtcontainer(max_size_in)
         {
-            *itr_in = read(raw_in, *itr_in, depth_in, skip_header);
+            read(raw_in, nullptr, false);
+        }
+
+        explicit list(std::vector<uint8_t> *raw_in, uint8_t **itr_in, const nbtcontainer *const parent_in, bool skip_header = false)
+                : nbtcontainer(parent_in)
+        {
+            *itr_in = read(raw_in, *itr_in, skip_header);
         }
 
         list(const list &) = delete;
@@ -200,14 +258,10 @@ namespace melon::nbt
         list(list &&) noexcept;
         list &operator=(list &&) noexcept;
 
-        virtual ~list();
-
-        uint8_t *read(std::vector<uint8_t> *raw, uint8_t *itr, uint32_t depth_in = 0, bool skip_header = false);
+        ~list() override;
 
     private:
-        uint16_t depth         = 0;
-        uint64_t size_tracking = 0;
-        bool     readonly      = false;
+        uint8_t *read(std::vector<uint8_t> *raw, uint8_t *itr, bool skip_header = false);
 
         std::vector<primitive_tag> primitives;
         std::vector<list>          lists;

@@ -11,42 +11,22 @@
 namespace melon::nbt
 {
 
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "bugprone-use-after-move"
     compound::compound(compound &&in) noexcept
-            : name(in.name), size(in.size),
-              depth(in.depth), size_tracking(in.size_tracking),
+            : nbtcontainer(std::move(in)),
               primitives(std::move(in.primitives)),
               compounds(std::move(in.compounds)),
               lists(std::move(in.lists))
     {
-        in.name = nullptr;
-
-        in.size          = 0;
-        in.depth         = 0;
-        in.size_tracking = 0;
     }
+#pragma clang diagnostic pop
 
     compound &compound::operator=(compound &&in) noexcept
     {
         if (this != &in)
         {
-            delete name;
-            // Don't delete raw. Its lifetime is outside the scope of the nbt library.
-
-            name = in.name;
-
-            size          = in.size;
-            depth         = in.depth;
-            size_tracking = in.size_tracking;
-
-            primitives = std::move(in.primitives);
-            compounds  = std::move(in.compounds);
-            lists      = std::move(in.lists);
-
-            in.name = nullptr;
-
-            in.size          = 0;
-            in.depth         = 0;
-            in.size_tracking = 0;
+            nbtcontainer::operator=(std::move(*this));
         }
 
         return *this;
@@ -54,22 +34,20 @@ namespace melon::nbt
 
     compound::~compound()
     {
-        /*if (name == nullptr)
+#if NBT_DEBUG == true
+        if (name == nullptr)
             std::cout << "Deleting anonymous compound." << std::endl;
         else
-            std::cout << "Deleting compound with name " << *name << std::endl;*/
-
-        delete name;
+            std::cout << "Deleting compound with name " << *name << std::endl;
+#endif
     }
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "misc-no-recursion"
 
-    uint8_t *compound::read(std::vector<uint8_t> *raw, uint8_t *itr, uint32_t depth_in, bool skip_header)
+    uint8_t *compound::read(std::vector<uint8_t> *raw_in, uint8_t *itr, bool skip_header)
     {
-        depth = depth_in + 1;
-
-        if (depth == 1 && (raw->max_size() - raw->size()) < 8)
+        if (depth() == 1 && (raw_in->max_size() - raw_in->size()) < 8)
         {
             // Later on we intentionally read up to 8 bytes past arbitrary locations so need the buffer to be 8 bytes
             // larger than the size of the data in it.
@@ -77,20 +55,17 @@ namespace melon::nbt
             std::cerr << "NBT read buffer requires resize. ("
                       << std::source_location::current().file_name() << ":"
                       << std::source_location::current().line() << "\n";
-            raw->reserve(raw->size() + 8);
+            raw_in->reserve(raw_in->size() + 8);
         }
 
-        if (depth > 512) throw std::runtime_error("NBT Tags Nested Too Deeply (>512).");
-
-        if (itr == nullptr) itr = raw->data();
+        if (itr == nullptr) itr = raw_in->data();
         auto itr_start = itr;
-        auto itr_end = raw->data() + raw->size();
+        auto itr_end = raw_in->data() + raw_in->size();
 
         if (!skip_header)
         {
-            if (raw->size() < 5) throw std::runtime_error("NBT Compound Tag Too Small.");
-            if (static_cast<tag_type_enum>(*itr++) != tag_compound)
-                throw std::runtime_error("NBT Tag Type Not Compound.");
+            if (raw_in->size() < 5) throw std::runtime_error("NBT Compound Tag Too Small.");
+            if (static_cast<tag_type_enum>(*itr++) != tag_compound) throw std::runtime_error("NBT Tag Type Not Compound.");
 
             const auto name_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
             itr += 2;
@@ -108,7 +83,9 @@ namespace melon::nbt
 
             if (tag_type == tag_end)
             {
-                //std::cout << "Found end tag." << std::endl;
+#if NBT_DEBUG == true
+                std::cout << "Found end tag." << std::endl;
+#endif
                 break;
             }
 
@@ -123,17 +100,21 @@ namespace melon::nbt
 
                 if (tag_type == tag_list)
                 {
-                    //std::cout << "Found List " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << std::endl;
+#if NBT_DEBUG == true
+                    std::cout << "Found List " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << std::endl;
+#endif
                     lists.emplace(std::piecewise_construct,
                                   std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
-                                  std::forward_as_tuple(depth, raw, &itr));
+                                  std::forward_as_tuple(raw_in, &itr, static_cast<nbtcontainer *>(this)));
                 }
                 else if (tag_type == tag_compound)
                 {
-                    //std::cout << "Found Compound " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << std::endl;
+#if NBT_DEBUG == true
+                    std::cout << "Found Compound " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << std::endl;
+#endif
                     compounds.emplace(std::piecewise_construct,
                                       std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
-                                      std::forward_as_tuple(depth, raw, &itr));
+                                      std::forward_as_tuple(raw_in, &itr, static_cast<nbtcontainer *>(this)));
                 }
             }
             else if (tag_properties[tag_type].size >= 0)
@@ -158,7 +139,10 @@ namespace melon::nbt
                         break;
                 }
 
-                /*switch (tag_type)
+#if NBT_DEBUG == true
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wswitch"
+                switch (tag_type)
                 {
                     case tag_byte:
                         std::cout << "Found byte primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << +(*((uint8_t *)(&prim_value) + 7)) << std::endl;
@@ -178,7 +162,9 @@ namespace melon::nbt
                     case tag_double:
                         std::cout << "Found double primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((double *)(&prim_value)) << std::endl;
                         break;
-                }*/
+                }
+#pragma clang diagnostic pop
+#endif
 
                 primitives.emplace(std::piecewise_construct,
                                    std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
@@ -198,7 +184,9 @@ namespace melon::nbt
                     std::memcpy((void *)str, (void *)itr, str_len);
                     str[str_len] = 0;
 
-                    //std::cout << "Read string " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << str << std::endl;
+#if NBT_DEBUG == true
+                    std::cout << "Read string " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << str << std::endl;
+#endif
                     primitives.emplace(std::piecewise_construct,
                                        std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
                                        std::forward_as_tuple(tag_type, (uint64_t)str));
@@ -209,31 +197,45 @@ namespace melon::nbt
                     const auto array_len = cvt_endian(*(reinterpret_cast<int32_t *>(itr)));
                     itr += 4;
 
-                    //std::cout << "Attempting array read of " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << " for " << array_len << " elements." << std::endl;
+#if NBT_DEBUG == true
+                    std::cout << "Attempting array read of " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << " for " << array_len << " elements." << std::endl;
+#endif
                     void *array_ptr;
 
                     switch (tag_type)
                     {
                         case tag_byte_array:
-                            //std::cout << "Byte Array Processing." << std::endl;
+#if NBT_DEBUG == true
+                            std::cout << "Byte Array Processing." << std::endl;
+#endif
                             read_tag_array<int8_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
-                            //std::cout << "Read byte array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
-                            //for (int index = 0; index < array_len; index++) std::cout << +((int8_t *)(array_ptr))[index] << " ";
-                            //std::cout << std::endl;
+#if NBT_DEBUG == true
+                            std::cout << "Read byte array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
+                            for (int index = 0; index < array_len; index++) std::cout << +((int8_t *)(array_ptr))[index] << " ";
+                            std::cout << std::endl;
+#endif
                             break;
                         case tag_int_array:
-                            //std::cout << "Int Array Processing." << std::endl;
+#if NBT_DEBUG == true
+                            std::cout << "Int Array Processing." << std::endl;
+#endif
                             read_tag_array<int32_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
-                            //std::cout << "Read int array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
-                            //for (int index = 0; index < array_len; index++) std::cout << +((int32_t *)(array_ptr))[index] << " ";
-                            //std::cout << std::endl;
+#if NBT_DEBUG == true
+                            std::cout << "Read int array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
+                            for (int index = 0; index < array_len; index++) std::cout << +((int32_t *)(array_ptr))[index] << " ";
+                            std::cout << std::endl;
+#endif
                             break;
                         case tag_long_array:
-                            //std::cout << "Long Array Processing." << std::endl;
+#if NBT_DEBUG == true
+                            std::cout << "Long Array Processing." << std::endl;
+#endif
                             read_tag_array<int64_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
-                            //std::cout << "Read long array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
-                            //for (int index = 0; index < array_len; index++) std::cout << +((int64_t *)(array_ptr))[index] << " ";
-                            //std::cout << std::endl;
+#if NBT_DEBUG == true
+                            std::cout << "Read long array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
+                            for (int index = 0; index < array_len; index++) std::cout << +((int64_t *)(array_ptr))[index] << " ";
+                            std::cout << std::endl;
+#endif
                             break;
                         default:
                             // Shouldn't be possible
@@ -249,9 +251,11 @@ namespace melon::nbt
         }
 
         size = itr - itr_start;
-        //if (depth == 1) std::cout << "Parsed " << size << " bytes of NBT data." << std::endl;
+#if NBT_DEBUG == true
+        if (depth() == 1) std::cout << "Parsed " << size << " bytes of NBT data." << std::endl;
+#endif
 
-        if (depth == 1)
+        if (depth() == 1)
             return nullptr;
         else
 #pragma clang diagnostic push

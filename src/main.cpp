@@ -38,14 +38,15 @@ int main() {
         return 1;
     }
 
-    auto *parsed_nbt = new melon::nbt::compound[10000];
+    std::vector<melon::nbt::compound> parsed_nbt;
+    parsed_nbt.reserve(10000);
 
     try
     {
         start = std::chrono::high_resolution_clock::now();
 
         for (int index = 0; index < 10000; index++)
-            parsed_nbt[0].read(&nbt_data);
+            parsed_nbt.emplace_back(&nbt_data);
 
         end = std::chrono::high_resolution_clock::now();
         std::cout << "Successfully parsed NBT data." << std::endl;
@@ -57,7 +58,7 @@ int main() {
         std::cerr << "Failed to parse NBT Data: " << e.what() << std::endl;
     }
 
-    delete[] parsed_nbt;
+    parsed_nbt.clear();
     std::cout << "Deleted parsed NBT." << std::endl;
 
     return 0;
