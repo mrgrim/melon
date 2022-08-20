@@ -6,7 +6,7 @@
 
 #include "util/deflate.h"
 #include "util/file.h"
-#include "nbt/nbt.h"
+#include "nbt/compound.h"
 
 int main() {
     std::vector<char> gz_buffer;

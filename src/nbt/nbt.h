@@ -2,8 +2,8 @@
 // Created by MrGrim on 8/14/2022.
 //
 
-#ifndef LODE_NBT_LIST_H
-#define LODE_NBT_LIST_H
+#ifndef MELON_NBT_H
+#define MELON_NBT_H
 
 #include <vector>
 #include <array>
@@ -16,14 +16,14 @@
 #include <cstring>
 #include <algorithm>
 #include <iostream>
-#include <stdlib.h>
+#include <cstdlib>
 #include <tuple>
 #include <utility>
 #include <variant>
 
 namespace melon::nbt
 {
-    #define NBT_DEBUG false
+#define NBT_DEBUG false
 
     class list;
 
@@ -95,21 +95,22 @@ namespace melon::nbt
 
     // Negative numbers represent element size for vector types
     // 127 means recursion is required
-    const static std::array<tag_properties_s, 13> tag_properties = {{
-                                                                            { 0, false },
-                                                                            { 1, false },
-                                                                            { 2, false },
-                                                                            { 4, false },
-                                                                            { 8, false },
-                                                                            { 4, false },
-                                                                            { 8, false },
-                                                                            { -1, true },
-                                                                            { -1, true },
-                                                                            { 127, true },
-                                                                            { 127, true },
-                                                                            { -4, true },
-                                                                            { -8, true }
-                                                                    }};
+    const static std::array<tag_properties_s, 13>
+            tag_properties = {{
+                                      { 0, false },
+                                      { 1, false },
+                                      { 2, false },
+                                      { 4, false },
+                                      { 8, false },
+                                      { 4, false },
+                                      { 8, false },
+                                      { -1, true },
+                                      { -1, true },
+                                      { 127, true },
+                                      { 127, true },
+                                      { -4, true },
+                                      { -8, true }
+                              }};
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "Simplify"
@@ -128,7 +129,7 @@ namespace melon::nbt
 #pragma clang diagnostic pop
 
     template<typename T>
-    using uint_size =
+    using uint_size [[maybe_unused]] =
             typename std::conditional<(sizeof(T) == 2), uint16_t,
                     typename std::conditional<(sizeof(T) == 4), uint32_t,
                             uint64_t
@@ -145,128 +146,6 @@ namespace melon::nbt
             for (int index = 0; index < len; index++)
                 ((T *)(*dst))[index] = cvt_endian<T>(((T *)(*dst))[index]);
     }
-
-    class nbtcontainer
-    {
-    public:
-        uint64_t    size  = 0;
-        std::string *name = nullptr;
-
-        nbtcontainer() = delete;
-        [[deprecated("Use melon::nbt:compound instead")]] explicit nbtcontainer(std::vector<uint8_t> *, int64_t max_size_in = -1)
-                : depth_v(1), max_size(max_size_in)
-        {
-            throw std::runtime_error("Invalid initialization of nbtcontainer base class.");
-        }
-
-        nbtcontainer(const nbtcontainer &) = delete;
-        nbtcontainer &operator=(const nbtcontainer &) = delete;
-
-        nbtcontainer(nbtcontainer &&) noexcept;
-        nbtcontainer &operator=(nbtcontainer &&) noexcept;
-
-        [[nodiscard]] uint16_t depth() const
-        {
-            return depth_v;
-        }
-
-        virtual ~nbtcontainer();
-
-    protected:
-        explicit nbtcontainer(int64_t max_size_in = -1)
-                : depth_v(1), max_size(max_size_in)
-        { }
-
-        explicit nbtcontainer(const nbtcontainer *const nbt_in)
-                : depth_v(nbt_in->depth_v + 1), max_size(nbt_in->max_size), size_tracking(nbt_in->size_tracking), parent(nbt_in->parent)
-        {
-            if (depth_v > 512) throw std::runtime_error("NBT Tags Nested Too Deeply (>512).");
-        }
-
-        uint16_t           depth_v       = 0;
-        uint64_t           size_tracking = 0;
-        int64_t            max_size      = -1;
-        bool               readonly      = false;
-        const nbtcontainer *parent       = nullptr;
-    };
-
-    class compound : nbtcontainer
-    {
-    public:
-        explicit compound(int64_t max_size_in = -1)
-                : nbtcontainer(max_size_in)
-        { }
-
-        explicit compound(std::vector<uint8_t> *raw_in, int64_t max_size_in = -1)
-                : nbtcontainer(max_size_in)
-        {
-            read(raw_in, nullptr, false);
-        }
-
-        explicit compound(std::vector<uint8_t> *raw_in, uint8_t **itr_in, const nbtcontainer *const parent_in, bool skip_header = false)
-                : nbtcontainer(parent_in)
-        {
-            *itr_in = read(raw_in, *itr_in, skip_header);
-        }
-
-        compound(const compound &) = delete;
-        compound &operator=(const compound &) = delete;
-
-        compound(compound &&) noexcept;
-        compound &operator=(compound &&) noexcept;
-
-        ~compound() override;
-    private:
-        uint8_t *read(std::vector<uint8_t> *raw_in, uint8_t *itr = nullptr, bool skip_header = false);
-
-        friend class std::pair<std::string, compound>;
-
-        friend class std::unordered_map<std::string, compound>;
-
-        friend class std::piecewise_construct_t;
-
-        std::unordered_map<std::string, primitive_tag> primitives;
-        std::unordered_map<std::string, compound>      compounds;
-        std::unordered_map<std::string, list>          lists;
-    };
-
-    class list : nbtcontainer
-    {
-    public:
-        tag_type_enum type  = tag_end;
-        int32_t       count = 0;
-
-        explicit list(int64_t max_size_in = -1)
-                : nbtcontainer(max_size_in)
-        { }
-
-        explicit list(std::vector<uint8_t> *raw_in, int64_t max_size_in = -1)
-                : nbtcontainer(max_size_in)
-        {
-            read(raw_in, nullptr, false);
-        }
-
-        explicit list(std::vector<uint8_t> *raw_in, uint8_t **itr_in, const nbtcontainer *const parent_in, bool skip_header = false)
-                : nbtcontainer(parent_in)
-        {
-            *itr_in = read(raw_in, *itr_in, skip_header);
-        }
-
-        list(const list &) = delete;
-        list &operator=(const list &) = delete;
-
-        list(list &&) noexcept;
-        list &operator=(list &&) noexcept;
-
-        ~list() override;
-
-    private:
-        uint8_t *read(std::vector<uint8_t> *raw, uint8_t *itr, bool skip_header = false);
-
-        std::vector<primitive_tag> primitives;
-        std::vector<list>          lists;
-        std::vector<compound>      compounds;
-    };
 }
 
-#endif //LODE_NBT_LIST_H
+#endif //MELON_NBT_H

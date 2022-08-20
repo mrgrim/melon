@@ -2,53 +2,12 @@
 // Created by MrGrim on 8/16/2022.
 //
 
-#include <stdlib.h>
+#include <cstdlib>
 
 #include "nbt/nbt.h"
 
 namespace melon::nbt
 {
-    nbtcontainer::nbtcontainer(nbtcontainer &&in) noexcept
-            : name(in.name), parent(in.parent), size(in.size), depth_v(in.depth_v), max_size(in.max_size), size_tracking(in.size_tracking), readonly(in.readonly)
-    {
-        in.name   = nullptr;
-        in.parent = nullptr;
-
-        in.size          = 0;
-        in.depth_v       = 0;
-        in.max_size      = -1;
-        in.size_tracking = 0;
-        in.readonly      = false;
-    }
-
-    nbtcontainer &nbtcontainer::operator=(nbtcontainer &&in) noexcept
-    {
-        if (this != &in)
-        {
-            delete name;
-
-            name   = in.name;
-            parent = in.parent;
-
-            size          = in.size;
-            depth_v       = in.depth_v;
-            max_size      = in.max_size;
-            size_tracking = in.size_tracking;
-            readonly      = in.readonly;
-
-            in.name   = nullptr;
-            in.parent = nullptr;
-
-            in.size          = 0;
-            in.depth_v       = 0;
-            in.max_size      = -1;
-            in.size_tracking = 0;
-            in.readonly      = false;
-        }
-
-        return *this;
-    }
-
     primitive_tag::primitive_tag(primitive_tag&& in) noexcept // NOLINT(cppcoreguidelines-pro-type-member-init)
     {
         tag_type = in.tag_type;
@@ -81,12 +40,10 @@ namespace melon::nbt
 
     primitive_tag::~primitive_tag()
     {
-        //std::cout << "Deleting primitive." << std::endl;
+#if DEBUG == true
+        std::cout << "Deleting primitive." << std::endl;
+#endif
         if (tag_properties[tag_type].is_complex && (void *)(value.tag_string) != nullptr)
             free((void *)(value.tag_byte_array));
-    }
-
-    nbtcontainer::~nbtcontainer() {
-        delete name;
     }
 }

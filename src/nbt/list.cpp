@@ -5,41 +5,90 @@
 #include <optional>
 #include <stdexcept>
 #include <cstring>
-#include <iostream>
 #include "nbt.h"
+#include "compound.h"
+#include "list.h"
+
+#if DEBUG == true
+#include <iostream>
+#endif
 
 namespace melon::nbt
 {
+    list::list(std::variant<compound *, list *> parent_in, int64_t max_size_in)
+            : depth(1), max_size(max_size_in), parent(parent_in)
+    {
+        if (std::holds_alternative<list *>(parent_in))
+            top = std::get<list *>(parent_in)->top;
+        else
+            top = std::get<compound *>(parent_in)->top;
+    }
 
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "bugprone-use-after-move"
+    list::list(std::vector<uint8_t> *raw_in, std::variant<compound *, list *> parent_in, int64_t max_size_in)
+            : depth(1), max_size(max_size_in), parent(parent_in)
+    {
+        if (std::holds_alternative<list *>(parent_in))
+            top = std::get<list *>(parent_in)->top;
+        else
+            top = std::get<compound *>(parent_in)->top;
+
+        read(raw_in, nullptr, false);
+    }
+
     list::list(list &&in) noexcept
-            : nbtcontainer(std::move(in)),
-              type(in.type), count(in.count),
+            : type(in.type), size(in.size), count(in.count), name(in.name),
+              depth(in.depth), size_tracking(in.size_tracking), max_size(in.max_size),
+              readonly(in.readonly), parent(in.parent),
               primitives(std::move(in.primitives)),
               compounds(std::move(in.compounds)),
               lists(std::move(in.lists))
     {
+        in.name   = nullptr;
+        in.parent = (list *)nullptr;
+
         in.type          = tag_end;
+        in.size          = 0;
         in.count         = 0;
+        in.depth         = 1;
+        in.size_tracking = 0;
+        in.max_size      = -1;
+        in.readonly      = false;
     }
-#pragma clang diagnostic pop
 
     list &list::operator=(list &&in) noexcept
     {
         if (this != &in)
         {
-            nbtcontainer::operator=(std::move(*this));
+            delete (name);
+
+            name   = in.name;
+            parent = in.parent;
 
             type          = in.type;
+            size          = in.size;
             count         = in.count;
+            depth         = in.depth;
+            size_tracking = in.size_tracking;
+            max_size      = in.max_size;
+            readonly      = in.readonly;
 
             primitives = std::move(in.primitives);
             compounds  = std::move(in.compounds);
             lists      = std::move(in.lists);
 
+            in.type  = tag_end;
+            in.count = 0;
+
+            in.name   = nullptr;
+            in.parent = (list *)nullptr;
+
             in.type          = tag_end;
+            in.size          = 0;
             in.count         = 0;
+            in.depth         = 1;
+            in.size_tracking = 0;
+            in.max_size      = -1;
+            in.readonly      = false;
         }
 
         return *this;
@@ -53,7 +102,27 @@ namespace melon::nbt
         else
             std::cout << "Deleting list with name " << *name << std::endl;
 #endif
+        delete name;
     }
+
+    list::list(std::vector<uint8_t> *raw_in, uint8_t **itr_in, compound *parent_in, bool skip_header)
+            : depth(parent_in->depth + 1), max_size(parent_in->max_size), size_tracking(parent_in->size_tracking), parent(parent_in)
+    {
+        if (depth > 512)
+            throw std::runtime_error("NBT Depth exceeds 512.");
+
+        *itr_in = read(raw_in, *itr_in, skip_header);
+    }
+
+    list::list(std::vector<uint8_t> *raw_in, uint8_t **itr_in, list *parent_in, bool skip_header)
+            : depth(parent_in->depth + 1), max_size(parent_in->max_size), size_tracking(parent_in->size_tracking), parent(parent_in)
+    {
+        if (depth > 512)
+            throw std::runtime_error("NBT Depth exceeds 512.");
+
+        *itr_in = read(raw_in, *itr_in, skip_header);
+    }
+
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "misc-no-recursion"
@@ -95,7 +164,7 @@ namespace melon::nbt
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous list." << std::endl;
 #endif
-                    lists.emplace_back(raw, &itr, static_cast<nbtcontainer *>(this));
+                    lists.emplace_back(raw, &itr, this);
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous list." << std::endl;
 #endif
@@ -110,7 +179,7 @@ namespace melon::nbt
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous compound." << std::endl;
 #endif
-                    compounds.emplace_back(raw, &itr, static_cast<nbtcontainer *>(this), true);
+                    compounds.emplace_back(raw, &itr, this, true);
 #if NBT_DEBUG == true
                     std::cout << "Exiting anonymous compound." << std::endl;
 #endif

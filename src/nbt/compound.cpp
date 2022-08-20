@@ -4,29 +4,95 @@
 
 #include <iostream>
 #include <utility>
-#include <source_location>
 #include <cstring>
 #include "nbt.h"
+#include "list.h"
+#include "compound.h"
+
+#if DEBUG == true
+#include <iostream>
+#include <source_location>
+#endif
 
 namespace melon::nbt
 {
 
 #pragma clang diagnostic push
-#pragma ide diagnostic ignored "bugprone-use-after-move"
+#pragma ide diagnostic ignored "LocalValueEscapesScope"
+    compound::compound(std::optional<std::variant<compound *, list *>> parent_in, int64_t max_size_in)
+            : depth(1), max_size(max_size_in)
+    {
+        if (parent_in)
+        {
+            parent = parent_in.value();
+            if (std::holds_alternative<list *>(parent_in.value()))
+                top = std::get<list *>(parent_in.value())->top;
+            else
+                top = std::get<compound *>(parent_in.value())->top;
+        }
+    }
+
+    compound::compound(std::vector<uint8_t> *raw_in, std::optional<std::variant<compound *, list *>> parent_in, int64_t max_size_in)
+            : depth(1), max_size(max_size_in)
+    {
+        if (parent_in)
+        {
+            parent = parent_in.value();
+            if (std::holds_alternative<list *>(parent_in.value()))
+                top = std::get<list *>(parent_in.value())->top;
+            else
+                top = std::get<compound *>(parent_in.value())->top;
+        }
+
+        read(raw_in, nullptr, false);
+    }
+#pragma clang diagnostic pop
+
     compound::compound(compound &&in) noexcept
-            : nbtcontainer(std::move(in)),
+            : size(in.size), name(in.name), depth(in.depth),
+              size_tracking(in.size_tracking), max_size(in.max_size),
+              readonly(in.readonly), parent(in.parent),
               primitives(std::move(in.primitives)),
               compounds(std::move(in.compounds)),
               lists(std::move(in.lists))
     {
+        in.name   = nullptr;
+        in.parent = (compound *)nullptr;
+
+        in.size          = 0;
+        in.depth         = 1;
+        in.size_tracking = 0;
+        in.max_size      = -1;
+        in.readonly      = false;
     }
-#pragma clang diagnostic pop
 
     compound &compound::operator=(compound &&in) noexcept
     {
         if (this != &in)
         {
-            nbtcontainer::operator=(std::move(*this));
+            delete (name);
+
+            name   = in.name;
+            parent = in.parent;
+
+            size          = in.size;
+            depth         = in.depth;
+            size_tracking = in.size_tracking;
+            max_size      = in.max_size;
+            readonly      = in.readonly;
+
+            primitives = std::move(in.primitives);
+            compounds  = std::move(in.compounds);
+            lists      = std::move(in.lists);
+
+            in.name   = nullptr;
+            in.parent = (compound *)nullptr;
+
+            in.size          = 0;
+            in.depth         = 1;
+            in.size_tracking = 0;
+            in.max_size      = -1;
+            in.readonly      = false;
         }
 
         return *this;
@@ -40,27 +106,48 @@ namespace melon::nbt
         else
             std::cout << "Deleting compound with name " << *name << std::endl;
 #endif
+        delete name;
     }
+
+    compound::compound(std::vector<uint8_t> *raw_in, uint8_t **itr_in, compound *parent_in, bool skip_header)
+            : depth(parent_in->depth + 1), max_size(parent_in->max_size), size_tracking(parent_in->size_tracking), parent(parent_in->parent)
+    {
+        if (depth > 512)
+            throw std::runtime_error("NBT Depth exceeds 512.");
+
+        *itr_in = read(raw_in, *itr_in, skip_header);
+    }
+
+    compound::compound(std::vector<uint8_t> *raw_in, uint8_t **itr_in, list *parent_in, bool skip_header)
+            : depth(parent_in->depth + 1), max_size(parent_in->max_size), size_tracking(parent_in->size_tracking), parent(parent_in->parent)
+    {
+        if (depth > 512)
+            throw std::runtime_error("NBT Depth exceeds 512.");
+
+        *itr_in = read(raw_in, *itr_in, skip_header);
+    }
+
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "misc-no-recursion"
 
     uint8_t *compound::read(std::vector<uint8_t> *raw_in, uint8_t *itr, bool skip_header)
     {
-        if (depth() == 1 && (raw_in->max_size() - raw_in->size()) < 8)
+        if (depth == 1 && (raw_in->max_size() - raw_in->size()) < 8)
         {
             // Later on we intentionally read up to 8 bytes past arbitrary locations so need the buffer to be 8 bytes
             // larger than the size of the data in it.
-
+#if DEBUG == true
             std::cerr << "NBT read buffer requires resize. ("
                       << std::source_location::current().file_name() << ":"
                       << std::source_location::current().line() << "\n";
+#endif
             raw_in->reserve(raw_in->size() + 8);
         }
 
         if (itr == nullptr) itr = raw_in->data();
         auto itr_start = itr;
-        auto itr_end = raw_in->data() + raw_in->size();
+        auto itr_end   = raw_in->data() + raw_in->size();
 
         if (!skip_header)
         {
@@ -105,7 +192,7 @@ namespace melon::nbt
 #endif
                     lists.emplace(std::piecewise_construct,
                                   std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
-                                  std::forward_as_tuple(raw_in, &itr, static_cast<nbtcontainer *>(this)));
+                                  std::forward_as_tuple(raw_in, &itr, this));
                 }
                 else if (tag_type == tag_compound)
                 {
@@ -114,7 +201,7 @@ namespace melon::nbt
 #endif
                     compounds.emplace(std::piecewise_construct,
                                       std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
-                                      std::forward_as_tuple(raw_in, &itr, static_cast<nbtcontainer *>(this)));
+                                      std::forward_as_tuple(raw_in, &itr, this));
                 }
             }
             else if (tag_properties[tag_type].size >= 0)
@@ -255,7 +342,7 @@ namespace melon::nbt
         if (depth() == 1) std::cout << "Parsed " << size << " bytes of NBT data." << std::endl;
 #endif
 
-        if (depth() == 1)
+        if (depth == 1)
             return nullptr;
         else
 #pragma clang diagnostic push
