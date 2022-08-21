@@ -8,6 +8,8 @@
 #include "util/file.h"
 #include "nbt/compound.h"
 
+//#define NBT_DEBUG true
+
 int main() {
     std::vector<char> gz_buffer;
 
@@ -38,15 +40,29 @@ int main() {
         return 1;
     }
 
+#if NBT_DEBUG == true
+    melon::nbt::compound *parsed_nbt;
+#else
     std::vector<melon::nbt::compound> parsed_nbt;
     parsed_nbt.reserve(10000);
+
+    std::vector<std::unique_ptr<std::vector<uint8_t>>> nbt_data_copies;
+    nbt_data_copies.reserve(10000);
+
+    for (int index = 0; index < 10000; index++)
+        nbt_data_copies.push_back(std::make_unique<std::vector<uint8_t>>(nbt_data));
+#endif
 
     try
     {
         start = std::chrono::high_resolution_clock::now();
 
+#if NBT_DEBUG == true
+        parsed_nbt = new melon::nbt::compound(std::move(std::make_unique<std::vector<uint8_t>>(nbt_data)));
+#else
         for (int index = 0; index < 10000; index++)
-            parsed_nbt.emplace_back(&nbt_data);
+            parsed_nbt.emplace_back(std::move(nbt_data_copies[index]));
+#endif
 
         end = std::chrono::high_resolution_clock::now();
         std::cout << "Successfully parsed NBT data." << std::endl;
@@ -58,7 +74,12 @@ int main() {
         std::cerr << "Failed to parse NBT Data: " << e.what() << std::endl;
     }
 
+#if NBT_DEBUG == true
+    delete parsed_nbt;
+#else
     parsed_nbt.clear();
+#endif
+
     std::cout << "Deleted parsed NBT." << std::endl;
 
     return 0;

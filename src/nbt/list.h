@@ -25,12 +25,11 @@ namespace melon::nbt
         list() = delete;
 
         explicit list(std::variant<compound *, list *> parent_in, int64_t max_size_in = -1);
-        explicit list(std::vector<uint8_t> *raw_in, std::variant<compound *, list *> parent_in, int64_t max_size_in = -1);
 
         // I'd honestly prefer these to be private, but that'd require either a custom allocator or an intermediate class
         // that would add temporary objects I'm trying to avoid
-        explicit list(std::vector<uint8_t> *raw_in, uint8_t **itr_in, compound *parent_in, bool skip_header = false);
-        explicit list(std::vector<uint8_t> *raw_in, uint8_t **itr_in, list *parent_in, bool skip_header = false);
+        explicit list(uint8_t **itr_in, compound *parent_in, bool skip_header = false);
+        explicit list(uint8_t **itr_in, list *parent_in, bool skip_header = false);
 
         list(const list &) = delete;
         list &operator=(const list &) = delete;
@@ -43,7 +42,7 @@ namespace melon::nbt
     private:
         friend class compound;
 
-        uint8_t *read(std::vector<uint8_t> *raw, uint8_t *itr, bool skip_header = false);
+        uint8_t *read(uint8_t *itr, bool skip_header = false);
 
         std::vector<primitive_tag> primitives;
         std::vector<list>          lists;

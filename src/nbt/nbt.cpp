@@ -23,8 +23,8 @@ namespace melon::nbt
     {
         if (this != &in)
         {
-            if (tag_properties[tag_type].is_complex && (void *)(value.tag_byte_array) != nullptr)
-                free((void *)(value.tag_byte_array));
+//            if (tag_properties[tag_type].is_complex && (void *)(value.tag_byte_array) != nullptr)
+//                free((void *)(value.tag_byte_array));
 
             tag_type = in.tag_type;
             size = in.size;
@@ -43,7 +43,7 @@ namespace melon::nbt
 #if DEBUG == true
         std::cout << "Deleting primitive." << std::endl;
 #endif
-        if (tag_properties[tag_type].is_complex && (void *)(value.tag_string) != nullptr)
-            free((void *)(value.tag_byte_array));
+//        if (tag_properties[tag_type].is_complex && (void *)(value.tag_string) != nullptr)
+//            free((void *)(value.tag_byte_array));
     }
 }

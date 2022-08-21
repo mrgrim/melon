@@ -137,6 +137,14 @@ namespace melon::nbt
             >::type;
 
     template<typename T>
+    void cvt_endian_array(int32_t len, T *src)
+    {
+        if constexpr (sizeof(T) >= 2)
+            for (int index = 0; index < len; index++)
+                src[index] = cvt_endian<T>(src[index]);
+    }
+
+    template<typename T>
     void read_tag_array(int32_t len, void **dst, void *src)
     {
         *dst = (void *)malloc(len * sizeof(T));

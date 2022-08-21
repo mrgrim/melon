@@ -18,21 +18,10 @@ namespace melon::nbt
     list::list(std::variant<compound *, list *> parent_in, int64_t max_size_in)
             : depth(1), max_size(max_size_in), parent(parent_in)
     {
-        if (std::holds_alternative<list *>(parent_in))
-            top = std::get<list *>(parent_in)->top;
+        if (std::holds_alternative<list *>(parent))
+            top = std::get<list *>(parent)->top;
         else
-            top = std::get<compound *>(parent_in)->top;
-    }
-
-    list::list(std::vector<uint8_t> *raw_in, std::variant<compound *, list *> parent_in, int64_t max_size_in)
-            : depth(1), max_size(max_size_in), parent(parent_in)
-    {
-        if (std::holds_alternative<list *>(parent_in))
-            top = std::get<list *>(parent_in)->top;
-        else
-            top = std::get<compound *>(parent_in)->top;
-
-        read(raw_in, nullptr, false);
+            top = std::get<compound *>(parent)->top;
     }
 
     list::list(list &&in) noexcept
@@ -105,29 +94,29 @@ namespace melon::nbt
         delete name;
     }
 
-    list::list(std::vector<uint8_t> *raw_in, uint8_t **itr_in, compound *parent_in, bool skip_header)
-            : depth(parent_in->depth + 1), max_size(parent_in->max_size), size_tracking(parent_in->size_tracking), parent(parent_in)
+    list::list(uint8_t **itr_in, compound *parent_in, bool skip_header)
+            : depth(parent_in->depth + 1), max_size(parent_in->max_size), size_tracking(parent_in->size_tracking), parent(parent_in), top(parent_in->top)
     {
         if (depth > 512)
             throw std::runtime_error("NBT Depth exceeds 512.");
 
-        *itr_in = read(raw_in, *itr_in, skip_header);
+        *itr_in = read(*itr_in, skip_header);
     }
 
-    list::list(std::vector<uint8_t> *raw_in, uint8_t **itr_in, list *parent_in, bool skip_header)
-            : depth(parent_in->depth + 1), max_size(parent_in->max_size), size_tracking(parent_in->size_tracking), parent(parent_in)
+    list::list(uint8_t **itr_in, list *parent_in, bool skip_header)
+            : depth(parent_in->depth + 1), max_size(parent_in->max_size), size_tracking(parent_in->size_tracking), parent(parent_in), top(parent_in->top)
     {
         if (depth > 512)
             throw std::runtime_error("NBT Depth exceeds 512.");
 
-        *itr_in = read(raw_in, *itr_in, skip_header);
+        *itr_in = read(*itr_in, skip_header);
     }
 
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "misc-no-recursion"
 
-    uint8_t *list::read(std::vector<uint8_t> *raw, uint8_t *itr, bool skip_header)
+    uint8_t *list::read(uint8_t *itr, bool skip_header)
     {
         if (itr == nullptr) throw std::runtime_error("NBT List Read called with NULL iterator.");
 
@@ -135,8 +124,8 @@ namespace melon::nbt
 
         if (!skip_header)
         {
-            if (raw->size() < 8) throw std::runtime_error("NBT List Tag Too Small.");
-            if (static_cast<tag_type_enum>(*itr++) != tag_list) throw std::runtime_error("NBT Tag Type Not List.");
+            if (static_cast<tag_type_enum>(*itr) != tag_list) throw std::runtime_error("NBT Tag Type Not List.");
+            *itr++ = 0; // This has the side effect of null terminating any strings if the parent object was a list of strings.
 
             auto name_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
             itr += 2;
@@ -146,9 +135,11 @@ namespace melon::nbt
             itr += name_len;
         }
 
-        auto tag_type = static_cast<tag_type_enum>(*itr++);
+        auto tag_type = static_cast<tag_type_enum>(*itr);
         if (tag_type >= tag_properties.size()) throw std::runtime_error("Invalid NBT Tag Type.");
         type = tag_type;
+
+        *itr++ = 0; // This has the side effect of null terminating any strings if the parent object was a list of strings.
 
         count = cvt_endian(*(reinterpret_cast<int32_t *>(itr)));
         itr += 4;
@@ -164,7 +155,7 @@ namespace melon::nbt
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous list." << std::endl;
 #endif
-                    lists.emplace_back(raw, &itr, this);
+                    lists.emplace_back(&itr, this);
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous list." << std::endl;
 #endif
@@ -179,7 +170,7 @@ namespace melon::nbt
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous compound." << std::endl;
 #endif
-                    compounds.emplace_back(raw, &itr, this, true);
+                    compounds.emplace_back(&itr, this, true);
 #if NBT_DEBUG == true
                     std::cout << "Exiting anonymous compound." << std::endl;
 #endif
@@ -221,18 +212,24 @@ namespace melon::nbt
 
             if (tag_type == tag_string)
             {
-                for (int32_t index = 0; index < count; index++)
+                // Reminder: NBT strings are "Modified UTF-8" and not null terminated.
+                // https://en.wikipedia.org/wiki/UTF-8#Modified_UTF-8
+                auto str_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
+                itr += 2;
+
+                primitives.emplace_back(tag_type, (uint64_t)itr);
+                itr += str_len;
+
+                for (int32_t index = 1; index < count; index++)
                 {
-                    // Reminder: NBT strings are "Modified UTF-8" and not null terminated.
-                    // https://en.wikipedia.org/wiki/UTF-8#Modified_UTF-8
-                    auto str_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
+                    // We do a sneaky thing here to avoid allocating memory. Pull the next iterations size here to make room for the null termination.
+                    // Don't do this for the last string. The parent compound processing will replace the type with 0 which will null terminate the
+                    // last string in this list.
+                    str_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
+                    *itr = 0;
                     itr += 2;
 
-                    auto str = (char *)malloc(str_len + 1);
-                    std::memcpy((void *)str, (void *)itr, str_len);
-                    str[str_len] = 0;
-
-                    primitives.emplace_back(tag_type, (uint64_t)str);
+                    primitives.emplace_back(tag_type, (uint64_t)itr);
                     itr += str_len;
                 }
             }
@@ -243,26 +240,24 @@ namespace melon::nbt
                     auto array_len = cvt_endian(*(reinterpret_cast<int32_t *>(itr)));
                     itr += 4;
 
-                    void *array_ptr;
-
                     switch (tag_type)
                     {
                         case tag_byte_array:
-                            read_tag_array<int8_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
+                            cvt_endian_array<int8_t>(array_len, reinterpret_cast<int8_t *>(itr));
                             break;
                         case tag_int_array:
-                            read_tag_array<int32_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
+                            cvt_endian_array<int32_t>(array_len, reinterpret_cast<int32_t *>(itr));
                             break;
                         case tag_long_array:
-                            read_tag_array<int64_t>(array_len, &array_ptr, reinterpret_cast<void *>(itr));
+                            cvt_endian_array<int64_t>(array_len, reinterpret_cast<int64_t *>(itr));
                             break;
                         default:
                             // Shouldn't be possible
                             throw std::runtime_error("Unexpected NBT Array Type.");
                     }
 
+                    primitives.emplace_back(tag_type, (uint64_t)itr);
                     itr += array_len * (tag_properties[tag_type].size * -1);
-                    primitives.emplace_back(tag_type, (uint64_t)array_ptr);
                 }
             }
         }
