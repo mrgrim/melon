@@ -71,14 +71,15 @@ namespace melon::nbt
     compound::compound(compound &&in) noexcept
             : size(in.size), name(in.name), depth(in.depth),
               size_tracking(in.size_tracking), max_size(in.max_size),
-              readonly(in.readonly), parent(in.parent),
+              readonly(in.readonly), parent(in.parent), name_backing(in.name_backing),
               primitives(std::move(in.primitives)),
               compounds(std::move(in.compounds)),
               lists(std::move(in.lists))
     {
-        in.name   = nullptr;
-        in.parent = (compound *)nullptr;
+        in.name_backing = nullptr;
+        in.parent       = (compound *)nullptr;
 
+        in.name          = std::string_view();
         in.size          = 0;
         in.depth         = 1;
         in.size_tracking = 0;
@@ -90,7 +91,7 @@ namespace melon::nbt
     {
         if (this != &in)
         {
-            delete (name);
+            delete (name_backing);
 
             name   = in.name;
             parent = in.parent;
@@ -100,12 +101,13 @@ namespace melon::nbt
             size_tracking = in.size_tracking;
             max_size      = in.max_size;
             readonly      = in.readonly;
+            name_backing  = in.name_backing;
 
             primitives = std::move(in.primitives);
             compounds  = std::move(in.compounds);
             lists      = std::move(in.lists);
 
-            in.name   = nullptr;
+            in.name   = std::string_view();
             in.parent = (compound *)nullptr;
 
             in.size          = 0;
@@ -113,6 +115,7 @@ namespace melon::nbt
             in.size_tracking = 0;
             in.max_size      = -1;
             in.readonly      = false;
+            in.name_backing  = nullptr;
         }
 
         return *this;
@@ -121,12 +124,12 @@ namespace melon::nbt
     compound::~compound()
     {
 #if NBT_DEBUG == true
-        if (name == nullptr)
+        if (name.empty())
             std::cout << "Deleting anonymous compound." << std::endl;
         else
-            std::cout << "Deleting compound with name " << *name << std::endl;
+            std::cout << "Deleting compound with name " << name << std::endl;
 #endif
-        delete name;
+        delete name_backing;
     }
 
     compound::compound(uint8_t **itr_in, compound *parent_in, bool skip_header)
@@ -156,6 +159,7 @@ namespace melon::nbt
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "misc-no-recursion"
+#pragma ide diagnostic ignored "LocalValueEscapesScope"
 
     uint8_t *compound::read(uint8_t *itr, bool skip_header)
     {
@@ -164,24 +168,20 @@ namespace melon::nbt
 
         if (!skip_header)
         {
-            if (static_cast<tag_type_enum>(*itr) != tag_compound) throw std::runtime_error("NBT Tag Type Not Compound.");
-            *itr++ = 0; // This has the side effect of null terminating any strings if the parent object was a list of strings.
+            if (static_cast<tag_type_enum>(*itr++) != tag_compound) throw std::runtime_error("NBT Tag Type Not Compound.");
 
             const auto name_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
             itr += 2;
 
-            delete name;
-            name = new std::string(reinterpret_cast<char *>(itr), name_len);
+            name = std::string_view(reinterpret_cast<char *>(itr), name_len);
 
             itr += name_len;
         }
 
         while (itr < itr_end)
         {
-            auto tag_type = static_cast<tag_type_enum>(*itr);
+            auto tag_type = static_cast<tag_type_enum>(*itr++);
             if (tag_type >= tag_properties.size()) throw std::runtime_error("Invalid NBT Tag Type.");
-
-            *itr++ = 0; // This has the side effect of null terminating any strings if the parent object was a list of strings.
 
             if (tag_type == tag_end)
             {
@@ -199,7 +199,6 @@ namespace melon::nbt
             if (tag_properties[tag_type].size == 127)
             {
                 itr -= 3 + name_len;
-                *itr = tag_type; // Undo null termination, it'll be redone by the recursion
 
                 if (tag_type == tag_list)
                 {
@@ -248,17 +247,17 @@ namespace melon::nbt
                 switch (tag_type)
                 {
                     case tag_byte:
-                        std::cout << "Found byte primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << +(*((uint8_t *)(&prim_value)))
+                        std::cout << "Found byte primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << +(*((int8_t *)(&prim_value)))
                                   << std::endl;
                         break;
                     case tag_short:
-                        std::cout << "Found short primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((uint16_t *)(&prim_value)) << std::endl;
+                        std::cout << "Found short primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((int16_t *)(&prim_value)) << std::endl;
                         break;
                     case tag_int:
-                        std::cout << "Found int primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((uint32_t *)(&prim_value)) << std::endl;
+                        std::cout << "Found int primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((int32_t *)(&prim_value)) << std::endl;
                         break;
                     case tag_long:
-                        std::cout << "Found long primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((uint64_t *)(&prim_value)) << std::endl;
+                        std::cout << "Found long primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((int64_t *)(&prim_value)) << std::endl;
                         break;
                     case tag_float:
                         std::cout << "Found float primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((float *)(&prim_value)) << std::endl;
@@ -285,12 +284,12 @@ namespace melon::nbt
                     itr += 2;
 
 #if NBT_DEBUG == true
-                    std::cout << "Read string " << std::string(reinterpret_cast<char *>(name_ptr), name_len)
-                              << ": " << std::string(reinterpret_cast<char *>(itr), str_len) << std::endl;
+                    std::cout << "Read string " << std::string_view(reinterpret_cast<char *>(name_ptr), name_len)
+                              << ": " << std::string_view(reinterpret_cast<char *>(itr), str_len) << std::endl;
 #endif
                     primitives.emplace(std::piecewise_construct,
                                        std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
-                                       std::forward_as_tuple(tag_type, (uint64_t)itr));
+                                       std::forward_as_tuple(tag_type, (uint64_t)itr, static_cast<uint32_t>(str_len)));
 
                     itr += str_len;
 
@@ -300,7 +299,7 @@ namespace melon::nbt
                 {
                     // This approach of swapping the arrays in place avoids allocating memory, but could be expensive or even illegal for architectures that
                     // require aligned access. I need a way to detect this and compensate at runtime. We have 6 bytes of wiggle room (5 at the head, 1 at the tail) to
-                    // move the array.
+                    // move the array. Even that would technically be UB since to check the offset would require performing a bitwise operation on the pointer.
                     const auto array_len = cvt_endian(*(reinterpret_cast<int32_t *>(itr)));
                     itr += 4;
 
@@ -349,7 +348,7 @@ namespace melon::nbt
 
                     primitives.emplace(std::piecewise_construct,
                                        std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
-                                       std::forward_as_tuple(tag_type, (uint64_t)itr));
+                                       std::forward_as_tuple(tag_type, (uint64_t)itr, static_cast<uint32_t>(array_len)));
 
                     itr += array_len * (tag_properties[tag_type].size * -1);
                 }
@@ -362,15 +361,9 @@ namespace melon::nbt
 #endif
 
         if (depth == 1)
-        {
-            *itr = 0; // Take advantage of the buffer we guaranteed at the start to null terminate any potential final string object
             return nullptr;
-        }
         else
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "LocalValueEscapesScope"
             return itr;
-#pragma clang diagnostic pop
     }
 
 #pragma clang diagnostic pop

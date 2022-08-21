@@ -19,8 +19,8 @@ namespace melon::nbt
     class compound
     {
     public:
-        uint64_t    size  = 0;
-        std::string *name = nullptr;
+        uint64_t         size = 0;
+        std::string_view name;
 
         compound() = delete;
 
@@ -44,17 +44,19 @@ namespace melon::nbt
 
         uint8_t *read(uint8_t *itr = nullptr, bool skip_header = false);
 
-        std::unordered_map<std::string, primitive_tag> primitives;
-        std::unordered_map<std::string, compound>      compounds;
-        std::unordered_map<std::string, list>          lists;
+        std::unordered_map<std::string_view, primitive_tag> primitives;
+        std::unordered_map<std::string_view, compound>      compounds;
+        std::unordered_map<std::string_view, list>          lists;
 
-        uint16_t                              depth         = 0;
-        uint64_t                              size_tracking = 0;
-        int64_t                               max_size      = -1;
-        bool                                  readonly      = false;
-        compound                              *top          = nullptr;
-        std::variant<compound *, list *>      parent        = (compound *)nullptr;
-        std::unique_ptr<std::vector<uint8_t>> raw           = nullptr;
+        uint16_t    depth         = 0;
+        uint64_t    size_tracking = 0;
+        int64_t     max_size      = -1;
+        bool        readonly      = false;
+        compound    *top          = nullptr;
+        std::string *name_backing = nullptr;
+
+        std::variant<compound *, list *>      parent = (compound *)nullptr;
+        std::unique_ptr<std::vector<uint8_t>> raw = nullptr;
     };
 }
 

@@ -17,10 +17,10 @@ namespace melon::nbt
     class list
     {
     public:
-        uint64_t      size  = 0;
-        std::string   *name = nullptr;
-        tag_type_enum type  = tag_end;
-        int32_t       count = 0;
+        uint64_t         size  = 0;
+        std::string_view name;
+        tag_type_enum    type  = tag_end;
+        int32_t          count = 0;
 
         list() = delete;
 
@@ -53,6 +53,7 @@ namespace melon::nbt
         int64_t                          max_size      = -1;
         bool                             readonly      = false;
         compound                         *top          = nullptr;
+        std::string                      *name_backing = nullptr;
         std::variant<compound *, list *> parent        = (list *)nullptr;
     };
 }

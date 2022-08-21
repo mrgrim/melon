@@ -85,6 +85,7 @@ namespace melon::nbt
             float  tag_float;
             double tag_double;
 
+            // Warning: This will not be null terminated!
             char *tag_string;
 
             int8_t  *tag_byte_array;

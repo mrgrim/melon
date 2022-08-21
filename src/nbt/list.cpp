@@ -27,13 +27,13 @@ namespace melon::nbt
     list::list(list &&in) noexcept
             : type(in.type), size(in.size), count(in.count), name(in.name),
               depth(in.depth), size_tracking(in.size_tracking), max_size(in.max_size),
-              readonly(in.readonly), parent(in.parent),
+              readonly(in.readonly), parent(in.parent), name_backing(in.name_backing),
               primitives(std::move(in.primitives)),
               compounds(std::move(in.compounds)),
               lists(std::move(in.lists))
     {
-        in.name   = nullptr;
-        in.parent = (list *)nullptr;
+        in.name = std::string_view();
+        in.parent       = (list *)nullptr;
 
         in.type          = tag_end;
         in.size          = 0;
@@ -42,13 +42,14 @@ namespace melon::nbt
         in.size_tracking = 0;
         in.max_size      = -1;
         in.readonly      = false;
+        in.name_backing = nullptr;
     }
 
     list &list::operator=(list &&in) noexcept
     {
         if (this != &in)
         {
-            delete (name);
+            delete (name_backing);
 
             name   = in.name;
             parent = in.parent;
@@ -60,6 +61,7 @@ namespace melon::nbt
             size_tracking = in.size_tracking;
             max_size      = in.max_size;
             readonly      = in.readonly;
+            name_backing  = in.name_backing;
 
             primitives = std::move(in.primitives);
             compounds  = std::move(in.compounds);
@@ -68,7 +70,7 @@ namespace melon::nbt
             in.type  = tag_end;
             in.count = 0;
 
-            in.name   = nullptr;
+            in.name   = std::string_view();
             in.parent = (list *)nullptr;
 
             in.type          = tag_end;
@@ -78,6 +80,7 @@ namespace melon::nbt
             in.size_tracking = 0;
             in.max_size      = -1;
             in.readonly      = false;
+            in.name_backing  = nullptr;
         }
 
         return *this;
@@ -86,12 +89,12 @@ namespace melon::nbt
     list::~list()
     {
 #if NBT_DEBUG == true
-        if (name == nullptr)
+        if (name.empty())
             std::cout << "Deleting anonymous list." << std::endl;
         else
-            std::cout << "Deleting list with name " << *name << std::endl;
+            std::cout << "Deleting list with name " << name << std::endl;
 #endif
-        delete name;
+        delete name_backing;
     }
 
     list::list(uint8_t **itr_in, compound *parent_in, bool skip_header)
@@ -115,6 +118,7 @@ namespace melon::nbt
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "misc-no-recursion"
+#pragma ide diagnostic ignored "LocalValueEscapesScope"
 
     uint8_t *list::read(uint8_t *itr, bool skip_header)
     {
@@ -124,22 +128,18 @@ namespace melon::nbt
 
         if (!skip_header)
         {
-            if (static_cast<tag_type_enum>(*itr) != tag_list) throw std::runtime_error("NBT Tag Type Not List.");
-            *itr++ = 0; // This has the side effect of null terminating any strings if the parent object was a list of strings.
+            if (static_cast<tag_type_enum>(*itr++) != tag_list) throw std::runtime_error("NBT Tag Type Not List.");
 
             auto name_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
             itr += 2;
 
-            delete name;
-            name = new std::string(reinterpret_cast<char *>(itr), name_len);
+            name = std::string_view(reinterpret_cast<char *>(itr), name_len);
             itr += name_len;
         }
 
-        auto tag_type = static_cast<tag_type_enum>(*itr);
+        auto tag_type = static_cast<tag_type_enum>(*itr++);
         if (tag_type >= tag_properties.size()) throw std::runtime_error("Invalid NBT Tag Type.");
         type = tag_type;
-
-        *itr++ = 0; // This has the side effect of null terminating any strings if the parent object was a list of strings.
 
         count = cvt_endian(*(reinterpret_cast<int32_t *>(itr)));
         itr += 4;
@@ -208,28 +208,16 @@ namespace melon::nbt
         }
         else if (tag_properties[tag_type].size < 0)
         {
-            primitives.reserve(count);
-
             if (tag_type == tag_string)
             {
-                // Reminder: NBT strings are "Modified UTF-8" and not null terminated.
-                // https://en.wikipedia.org/wiki/UTF-8#Modified_UTF-8
-                auto str_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
-                itr += 2;
-
-                primitives.emplace_back(tag_type, (uint64_t)itr);
-                itr += str_len;
-
-                for (int32_t index = 1; index < count; index++)
+                for (int32_t index = 0; index < count; index++)
                 {
-                    // We do a sneaky thing here to avoid allocating memory. Pull the next iterations size here to make room for the null termination.
-                    // Don't do this for the last string. The parent compound processing will replace the type with 0 which will null terminate the
-                    // last string in this list.
-                    str_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
-                    *itr = 0;
+                    // Reminder: NBT strings are "Modified UTF-8" and not null terminated.
+                    // https://en.wikipedia.org/wiki/UTF-8#Modified_UTF-8
+                    auto str_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
                     itr += 2;
 
-                    primitives.emplace_back(tag_type, (uint64_t)itr);
+                    primitives.emplace_back(tag_type, (uint64_t)itr, static_cast<uint32_t>(str_len));
                     itr += str_len;
                 }
             }
@@ -256,7 +244,7 @@ namespace melon::nbt
                             throw std::runtime_error("Unexpected NBT Array Type.");
                     }
 
-                    primitives.emplace_back(tag_type, (uint64_t)itr);
+                    primitives.emplace_back(tag_type, (uint64_t)itr, static_cast<uint32_t>(array_len));
                     itr += array_len * (tag_properties[tag_type].size * -1);
                 }
             }
