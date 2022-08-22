@@ -20,6 +20,8 @@
 #include <tuple>
 #include <utility>
 #include <variant>
+#include <memory>
+#include <memory_resource>
 
 namespace melon::nbt
 {
@@ -155,6 +157,23 @@ namespace melon::nbt
             for (int index = 0; index < len; index++)
                 ((T *)(*dst))[index] = cvt_endian<T>(((T *)(*dst))[index]);
     }
+
+    std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>> get_std_default_pmr_rsrc();
+
+    class debug_monotonic_buffer_resource : public std::pmr::monotonic_buffer_resource
+    {
+    public:
+        debug_monotonic_buffer_resource(void *buffer, std::size_t buffer_size);
+        ~debug_monotonic_buffer_resource() override;
+
+    protected:
+        void *do_allocate(std::size_t bytes, std::size_t alignment) override;
+        void do_deallocate(void *p, std::size_t bytes, std::size_t alignment) override;
+        bool do_is_equal(const std::pmr::memory_resource &other) const noexcept override;
+
+    private:
+        int64_t total_bytes_allocated = 0;
+    };
 }
 
 #endif //MELON_NBT_H

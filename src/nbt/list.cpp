@@ -5,6 +5,8 @@
 #include <optional>
 #include <stdexcept>
 #include <cstring>
+#include <memory>
+#include <memory_resource>
 #include "nbt.h"
 #include "compound.h"
 #include "list.h"
@@ -15,25 +17,53 @@
 
 namespace melon::nbt
 {
-    list::list(std::variant<compound *, list *> parent_in, int64_t max_size_in)
-            : depth(1), max_size(max_size_in), parent(parent_in)
+    list::list(std::variant<compound *, list *> parent_in)
+            : parent(parent_in),
+              top(extract_top_compound()),
+              pmr_rsrc(top->pmr_rsrc),
+              primitives(extract_pmr_rsrc()),
+              compounds(extract_pmr_rsrc()),
+              lists(extract_pmr_rsrc())
     {
         if (std::holds_alternative<list *>(parent))
-            top = std::get<list *>(parent)->top;
+        {
+            auto parent_l = std::get<list *>(parent);
+
+            depth         = parent_l->depth + 1;
+            max_size      = parent_l->max_size + 1;
+            size_tracking = parent_l->size_tracking;
+            readonly      = parent_l->readonly;
+        }
         else
-            top = std::get<compound *>(parent)->top;
+        {
+            auto parent_l = std::get<compound *>(parent);
+
+            depth         = parent_l->depth + 1;
+            max_size      = parent_l->max_size + 1;
+            size_tracking = parent_l->size_tracking;
+            readonly      = parent_l->readonly;
+        }
     }
 
     list::list(list &&in) noexcept
-            : type(in.type), size(in.size), count(in.count), name(in.name),
-              depth(in.depth), size_tracking(in.size_tracking), max_size(in.max_size),
-              readonly(in.readonly), parent(in.parent), name_backing(in.name_backing),
+            : type(in.type),
+              size(in.size),
+              count(in.count),
+              name(in.name),
+              depth(in.depth),
+              size_tracking(in.size_tracking),
+              max_size(in.max_size),
+              readonly(in.readonly),
+              parent(in.parent),
+              top(in.top),
+              pmr_rsrc(get_std_default_pmr_rsrc()),
+              name_backing(in.name_backing),
               primitives(std::move(in.primitives)),
               compounds(std::move(in.compounds)),
               lists(std::move(in.lists))
     {
-        in.name = std::string_view();
-        in.parent       = (list *)nullptr;
+        in.name   = std::string_view();
+        in.parent = (list *)nullptr;
 
         in.type          = tag_end;
         in.size          = 0;
@@ -42,7 +72,7 @@ namespace melon::nbt
         in.size_tracking = 0;
         in.max_size      = -1;
         in.readonly      = false;
-        in.name_backing = nullptr;
+        in.name_backing  = nullptr;
     }
 
     list &list::operator=(list &&in) noexcept
@@ -97,8 +127,16 @@ namespace melon::nbt
         delete name_backing;
     }
 
-    list::list(uint8_t **itr_in, compound *parent_in, bool skip_header)
-            : depth(parent_in->depth + 1), max_size(parent_in->max_size), size_tracking(parent_in->size_tracking), parent(parent_in), top(parent_in->top)
+    list::list(std::byte **itr_in, compound *parent_in, bool skip_header)
+            : depth(parent_in->depth + 1),
+              max_size(parent_in->max_size),
+              size_tracking(parent_in->size_tracking),
+              parent(parent_in),
+              top(parent_in->top),
+              pmr_rsrc(top->pmr_rsrc),
+              primitives(extract_pmr_rsrc()),
+              compounds(extract_pmr_rsrc()),
+              lists(extract_pmr_rsrc())
     {
         if (depth > 512)
             throw std::runtime_error("NBT Depth exceeds 512.");
@@ -106,8 +144,16 @@ namespace melon::nbt
         *itr_in = read(*itr_in, skip_header);
     }
 
-    list::list(uint8_t **itr_in, list *parent_in, bool skip_header)
-            : depth(parent_in->depth + 1), max_size(parent_in->max_size), size_tracking(parent_in->size_tracking), parent(parent_in), top(parent_in->top)
+    list::list(std::byte **itr_in, list *parent_in, bool skip_header)
+            : depth(parent_in->depth + 1),
+              max_size(parent_in->max_size),
+              size_tracking(parent_in->size_tracking),
+              parent(parent_in),
+              top(parent_in->top),
+              pmr_rsrc(top->pmr_rsrc),
+              primitives(extract_pmr_rsrc()),
+              compounds(extract_pmr_rsrc()),
+              lists(extract_pmr_rsrc())
     {
         if (depth > 512)
             throw std::runtime_error("NBT Depth exceeds 512.");
@@ -120,7 +166,7 @@ namespace melon::nbt
 #pragma ide diagnostic ignored "misc-no-recursion"
 #pragma ide diagnostic ignored "LocalValueEscapesScope"
 
-    uint8_t *list::read(uint8_t *itr, bool skip_header)
+    std::byte *list::read(std::byte *itr, bool skip_header)
     {
         if (itr == nullptr) throw std::runtime_error("NBT List Read called with NULL iterator.");
 
@@ -255,4 +301,21 @@ namespace melon::nbt
     }
 
 #pragma clang diagnostic pop
+
+    const compound *list::extract_top_compound()
+    {
+        if (std::holds_alternative<compound *>(parent))
+            return std::get<compound *>(parent)->top;
+        else
+            return std::get<list *>(parent)->top;
+    }
+
+    std::pmr::memory_resource *list::extract_pmr_rsrc()
+    {
+        if (std::holds_alternative<std::shared_ptr<std::pmr::memory_resource>>(pmr_rsrc))
+            return std::get<std::shared_ptr<std::pmr::memory_resource>>(pmr_rsrc).get();
+        else
+            return std::get<std::pmr::memory_resource *>(pmr_rsrc);
+    }
+
 }

@@ -5,6 +5,8 @@
 #include <iostream>
 #include <utility>
 #include <cstring>
+#include <memory>
+#include <memory_resource>
 #include "nbt.h"
 #include "list.h"
 #include "compound.h"
@@ -20,34 +22,48 @@ namespace melon::nbt
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "LocalValueEscapesScope"
 
-    compound::compound(std::optional<std::variant<compound *, list *>> parent_in, int64_t max_size_in)
+    compound::compound(std::optional<std::variant<compound *, list *>> parent_in, int64_t max_size_in, std::byte *pmr_buf, int64_t pmr_buf_size)
+            : parent(parent_in),
+              top(extract_top_compound()),
+              pmr_rsrc(construct_pmr_rsrc(pmr_buf, pmr_buf_size)),
+              primitives(extract_pmr_rsrc()),
+              compounds(extract_pmr_rsrc()),
+              lists(extract_pmr_rsrc())
     {
-        if (parent_in)
+        if (parent)
         {
-            parent = parent_in.value();
-            if (std::holds_alternative<list *>(parent))
+            if (std::holds_alternative<list *>(parent.value()))
             {
-                depth    = std::get<list *>(parent)->depth + 1;
-                max_size = std::get<list *>(parent)->max_size;
-                top      = std::get<list *>(parent)->top;
+                auto parent_l = std::get<list *>(parent.value());
+
+                depth    = parent_l->depth + 1;
+                max_size = parent_l->max_size;
             }
             else
             {
-                depth    = std::get<list *>(parent)->depth + 1;
-                max_size = std::get<list *>(parent)->max_size;
-                top      = std::get<compound *>(parent)->top;
+                auto parent_l = std::get<compound *>(parent.value());
+
+                depth    = parent_l->depth + 1;
+                max_size = parent_l->max_size;
             }
         }
         else
         {
-            top      = this;
             depth    = 1;
             max_size = max_size_in;
         }
     }
 
-    compound::compound(std::unique_ptr<std::vector<uint8_t>> raw_in, int64_t max_size_in)
-            : depth(1), max_size(max_size_in), top(this), raw(std::move(raw_in))
+    compound::compound(std::unique_ptr<std::vector<std::byte>> raw_in, std::byte *pmr_buf, int64_t pmr_buf_size)
+            : depth(1),
+              max_size(-1),
+              top(this),
+              raw(std::move(raw_in)),
+              pmr_rsrc(construct_pmr_rsrc(pmr_buf, pmr_buf_size)),
+              primitives(extract_pmr_rsrc()),
+              compounds(extract_pmr_rsrc()),
+              lists(extract_pmr_rsrc())
+
     {
         if (raw->size() < 5) throw std::runtime_error("NBT Compound Tag Too Small.");
 
@@ -69,15 +85,22 @@ namespace melon::nbt
 #pragma clang diagnostic pop
 
     compound::compound(compound &&in) noexcept
-            : size(in.size), name(in.name), depth(in.depth),
-              size_tracking(in.size_tracking), max_size(in.max_size),
-              readonly(in.readonly), parent(in.parent), name_backing(in.name_backing),
+            : size(in.size),
+              name(in.name),
+              depth(in.depth),
+              size_tracking(in.size_tracking),
+              max_size(in.max_size),
+              readonly(in.readonly),
+              parent(in.parent),
+              top(in.top),
+              pmr_rsrc(get_std_default_pmr_rsrc()),
+              name_backing(in.name_backing),
               primitives(std::move(in.primitives)),
               compounds(std::move(in.compounds)),
               lists(std::move(in.lists))
     {
         in.name_backing = nullptr;
-        in.parent       = (compound *)nullptr;
+        in.parent       = std::nullopt;
 
         in.name          = std::string_view();
         in.size          = 0;
@@ -108,7 +131,7 @@ namespace melon::nbt
             lists      = std::move(in.lists);
 
             in.name   = std::string_view();
-            in.parent = (compound *)nullptr;
+            in.parent = std::nullopt;
 
             in.size          = 0;
             in.depth         = 1;
@@ -130,26 +153,47 @@ namespace melon::nbt
             std::cout << "Deleting compound with name " << name << std::endl;
 #endif
         delete name_backing;
+
+        primitives.clear();
+        lists.clear();
+        compounds.clear();
+
+        if (top == this)
+        {
+#if NBT_DEBUG == true
+            std::cout << "Top level compound destructor called." << std::endl;
+#endif
+        }
     }
 
-    compound::compound(uint8_t **itr_in, compound *parent_in, bool skip_header)
+    compound::compound(std::byte **itr_in, compound *parent_in, bool skip_header)
             : depth(parent_in->depth + 1),
               max_size(parent_in->max_size),
               size_tracking(parent_in->size_tracking),
               parent(parent_in->parent),
-              top(parent_in->top)
+              top(parent_in->top),
+              pmr_rsrc(parent_in->top->pmr_rsrc),
+              primitives(extract_pmr_rsrc()),
+              compounds(extract_pmr_rsrc()),
+              lists(extract_pmr_rsrc())
+
     {
         if (depth > 512) throw std::runtime_error("NBT Depth exceeds 512.");
 
         *itr_in = read(*itr_in, skip_header);
     }
 
-    compound::compound(uint8_t **itr_in, list *parent_in, bool skip_header)
+    compound::compound(std::byte **itr_in, list *parent_in, bool skip_header)
             : depth(parent_in->depth + 1),
               max_size(parent_in->max_size),
               size_tracking(parent_in->size_tracking),
               parent(parent_in->parent),
-              top(parent_in->top)
+              top(parent_in->top),
+              pmr_rsrc(parent_in->top->pmr_rsrc),
+              primitives(extract_pmr_rsrc()),
+              compounds(extract_pmr_rsrc()),
+              lists(extract_pmr_rsrc())
+
     {
         if (depth > 512) throw std::runtime_error("NBT Depth exceeds 512.");
 
@@ -161,7 +205,7 @@ namespace melon::nbt
 #pragma ide diagnostic ignored "misc-no-recursion"
 #pragma ide diagnostic ignored "LocalValueEscapesScope"
 
-    uint8_t *compound::read(uint8_t *itr, bool skip_header)
+    std::byte *compound::read(std::byte *itr, bool skip_header)
     {
         auto itr_start = itr;
         auto itr_end   = top->raw->data() + top->raw->size();
@@ -268,10 +312,10 @@ namespace melon::nbt
                 }
 #pragma clang diagnostic pop
 #endif
-
                 primitives.emplace(std::piecewise_construct,
                                    std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
                                    std::forward_as_tuple(tag_type, *(reinterpret_cast<uint64_t *>(&prim_value))));
+
                 itr += tag_properties[tag_type].size;
             }
             else if (tag_properties[tag_type].size < 0)
@@ -364,6 +408,49 @@ namespace melon::nbt
             return nullptr;
         else
             return itr;
+    }
+
+    const compound *compound::extract_top_compound()
+    {
+        if (parent.has_value())
+        {
+            if (std::holds_alternative<compound *>(parent.value()))
+                return std::get<compound *>(parent.value())->top;
+            else
+                return std::get<list *>(parent.value())->top;
+        }
+        return this;
+    }
+
+    std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>> compound::construct_pmr_rsrc(std::byte *pmr_buf, int64_t pmr_buf_size) const
+    {
+        if (top == this)
+        {
+            std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>> ret;
+
+            if (pmr_buf == nullptr)
+                ret = std::pmr::get_default_resource();
+            else
+            {
+#if NBT_DEBUG == true
+                ret = std::make_shared<debug_monotonic_buffer_resource>(pmr_buf, pmr_buf_size);
+#else
+                ret = std::make_shared<std::pmr::monotonic_buffer_resource>(pmr_buf, pmr_buf_size);
+#endif
+            }
+
+            return ret;
+        }
+        else
+            return top->pmr_rsrc;
+    }
+
+    std::pmr::memory_resource *compound::extract_pmr_rsrc()
+    {
+        if (std::holds_alternative<std::shared_ptr<std::pmr::memory_resource>>(pmr_rsrc))
+            return std::get<std::shared_ptr<std::pmr::memory_resource>>(pmr_rsrc).get();
+        else
+            return std::get<std::pmr::memory_resource *>(pmr_rsrc);
     }
 
 #pragma clang diagnostic pop

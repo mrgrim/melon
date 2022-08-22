@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.23)
 project(melon)
 
-include_directories(F:/Development/SDK/libdeflate;./src)
+include_directories(F:/Development/SDK/libdeflate;./src;./include)
 find_library(libdeflate deflatestatic F:/Development/SDK/libdeflate)
 
 set(CMAKE_CXX_STANDARD 23)

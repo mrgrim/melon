@@ -14,7 +14,7 @@ namespace melon::util {
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "Simplify"
 
-    int gunzip(const std::vector<char> &in, std::vector<uint8_t> *out) {
+    int gunzip(const std::vector<char> &in, std::vector<std::byte> *out) {
         struct libdeflate_decompressor *d;
 
         d = libdeflate_alloc_decompressor();

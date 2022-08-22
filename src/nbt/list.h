@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <memory>
+#include <memory_resource>
 #include "nbt.h"
 
 namespace melon::nbt
@@ -24,12 +26,12 @@ namespace melon::nbt
 
         list() = delete;
 
-        explicit list(std::variant<compound *, list *> parent_in, int64_t max_size_in = -1);
+        explicit list(std::variant<compound *, list *> parent_in);
 
         // I'd honestly prefer these to be private, but that'd require either a custom allocator or an intermediate class
         // that would add temporary objects I'm trying to avoid
-        explicit list(uint8_t **itr_in, compound *parent_in, bool skip_header = false);
-        explicit list(uint8_t **itr_in, list *parent_in, bool skip_header = false);
+        explicit list(std::byte **itr_in, compound *parent_in, bool skip_header = false);
+        explicit list(std::byte **itr_in, list *parent_in, bool skip_header = false);
 
         list(const list &) = delete;
         list &operator=(const list &) = delete;
@@ -42,19 +44,25 @@ namespace melon::nbt
     private:
         friend class compound;
 
-        uint8_t *read(uint8_t *itr, bool skip_header = false);
+        std::byte *read(std::byte *itr, bool skip_header = false);
 
-        std::vector<primitive_tag> primitives;
-        std::vector<list>          lists;
-        std::vector<compound>      compounds;
+        const compound *extract_top_compound();
+        std::pmr::memory_resource *extract_pmr_rsrc();
 
-        uint16_t                         depth         = 0;
-        uint64_t                         size_tracking = 0;
-        int64_t                          max_size      = -1;
-        bool                             readonly      = false;
-        compound                         *top          = nullptr;
-        std::string                      *name_backing = nullptr;
-        std::variant<compound *, list *> parent        = (list *)nullptr;
+        std::variant<compound *, list *>                    parent;
+        const compound                                      *top;
+        std::variant<std::pmr::memory_resource *,
+                std::shared_ptr<std::pmr::memory_resource>> pmr_rsrc;
+
+        std::pmr::vector<primitive_tag> primitives;
+        std::pmr::vector<list>          lists;
+        std::pmr::vector<compound>      compounds;
+
+        uint16_t    depth         = 0;
+        uint64_t    size_tracking = 0;
+        int64_t     max_size      = -1;
+        bool        readonly      = false;
+        std::string *name_backing = nullptr;
     };
 }
 

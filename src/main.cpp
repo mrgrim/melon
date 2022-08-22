@@ -28,7 +28,7 @@ int main() {
 
     start = std::chrono::high_resolution_clock::now();
 
-    std::vector<uint8_t> nbt_data;
+    std::vector<std::byte> nbt_data;
     if (!melon::util::gunzip(gz_buffer, &nbt_data))
     {
         end = std::chrono::high_resolution_clock::now();
@@ -42,15 +42,21 @@ int main() {
 
 #if NBT_DEBUG == true
     melon::nbt::compound *parsed_nbt;
+    auto *pmr_buf = new std::byte[30000];
 #else
     std::vector<melon::nbt::compound> parsed_nbt;
     parsed_nbt.reserve(10000);
 
-    std::vector<std::unique_ptr<std::vector<uint8_t>>> nbt_data_copies;
+    std::vector<std::unique_ptr<std::vector<std::byte>>> nbt_data_copies;
     nbt_data_copies.reserve(10000);
+    auto pmr_buffers = std::array<std::byte *, 10000>();
 
     for (int index = 0; index < 10000; index++)
-        nbt_data_copies.push_back(std::make_unique<std::vector<uint8_t>>(nbt_data));
+    {
+        nbt_data_copies.push_back(std::make_unique<std::vector<std::byte>>(nbt_data));
+        pmr_buffers[index] = new std::byte[30000];
+    }
+
 #endif
 
     try
@@ -58,10 +64,10 @@ int main() {
         start = std::chrono::high_resolution_clock::now();
 
 #if NBT_DEBUG == true
-        parsed_nbt = new melon::nbt::compound(std::move(std::make_unique<std::vector<uint8_t>>(nbt_data)));
+        parsed_nbt = new melon::nbt::compound(std::move(std::make_unique<std::vector<std::byte>>(nbt_data)), pmr_buf, 30000);
 #else
         for (int index = 0; index < 10000; index++)
-            parsed_nbt.emplace_back(std::move(nbt_data_copies[index]));
+            parsed_nbt.emplace_back(std::move(nbt_data_copies[index]), pmr_buffers[index], 30000);
 #endif
 
         end = std::chrono::high_resolution_clock::now();
@@ -78,6 +84,9 @@ int main() {
     delete parsed_nbt;
 #else
     parsed_nbt.clear();
+
+    for (int index = 0; index < 10000; index++)
+        delete pmr_buffers[index];
 #endif
 
     std::cout << "Deleted parsed NBT." << std::endl;

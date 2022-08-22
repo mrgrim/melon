@@ -6,7 +6,7 @@
 #define LODE_UTIL_DEFLATE_H
 
 namespace melon::util {
-    int gunzip(const std::vector<char> &in, std::vector<uint8_t> *out);
+    int gunzip(const std::vector<char> &in, std::vector<std::byte> *out);
 }
 
 #endif //LODE_UTIL_DEFLATE_H
