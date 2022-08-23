@@ -192,6 +192,10 @@ namespace melon::nbt
 
         if (tag_properties[tag_type].size == 127)
         {
+#if NBT_DEBUG == true
+            std::cout << "Found a list of " << tag_properties[tag_type].name << std::endl;
+#endif
+
             if (tag_type == tag_list)
             {
                 lists.reserve(count);
@@ -204,6 +208,7 @@ namespace melon::nbt
                     lists.emplace_back(&itr, this);
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous list." << std::endl;
+                    compound::lists_parsed++;
 #endif
                 }
             }
@@ -219,18 +224,23 @@ namespace melon::nbt
                     compounds.emplace_back(&itr, this, true);
 #if NBT_DEBUG == true
                     std::cout << "Exiting anonymous compound." << std::endl;
+                    compound::compounds_parsed++;
 #endif
                 }
             }
         }
         else if (tag_properties[tag_type].size > 0)
         {
+#if NBT_DEBUG == true
+            std::cout << "Found a list of " << tag_properties[tag_type].name << ": ";
+#endif
+
             primitives.reserve(count);
 
-            // C++14 guarantees the start address is the same across union members making a memcpy safe to do
             for (int32_t index = 0; index < count; index++)
             {
                 uint64_t prim_value;
+                // C++14 guarantees the start address is the same across union members making a memcpy safe to do
                 std::memcpy(reinterpret_cast<void *>(&prim_value), reinterpret_cast<void *>(itr), sizeof(prim_value));
 
                 // Change endianness based on type size to keep it to these 3 cases. The following code should compile
@@ -248,14 +258,53 @@ namespace melon::nbt
                         break;
                 }
 
+#if NBT_DEBUG == true
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wswitch"
+                compound::primitives_parsed++;
+
+                switch (tag_type)
+                {
+                    case tag_byte:
+                        std::cout << +(*((int8_t *)(&prim_value))) << " ";
+                        break;
+                    case tag_short:
+                        std::cout << (*((int16_t *)(&prim_value))) << " ";
+                        break;
+                    case tag_int:
+                        std::cout << (*((int32_t *)(&prim_value))) << " ";
+                        break;
+                    case tag_long:
+                        std::cout << (*((int64_t *)(&prim_value))) << " ";
+                        break;
+                    case tag_float:
+                        std::cout << (*((float *)(&prim_value))) << " ";
+                        break;
+                    case tag_double:
+                        std::cout << (*((double *)(&prim_value))) << " ";
+                        break;
+                }
+#pragma clang diagnostic pop
+#endif
+
                 primitives.emplace_back(tag_type, prim_value);
                 itr += tag_properties[tag_type].size;
             }
+
+#if NBT_DEBUG == true
+            std::cout << std::endl;
+#endif
         }
         else if (tag_properties[tag_type].size < 0)
         {
+            primitives.reserve(count);
+
             if (tag_type == tag_string)
             {
+#if NBT_DEBUG == true
+                std::cout << "Found a list of Strings: " << std::endl;
+#endif
+
                 for (int32_t index = 0; index < count; index++)
                 {
                     // Reminder: NBT strings are "Modified UTF-8" and not null terminated.
@@ -263,12 +312,21 @@ namespace melon::nbt
                     auto str_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
                     itr += 2;
 
-                    primitives.emplace_back(tag_type, (uint64_t)itr, static_cast<uint32_t>(str_len));
+#if NBT_DEBUG == true
+                    std::cout << std::string_view(reinterpret_cast<char *>(itr), str_len) << std::endl;
+                    compound::strings_parsed++;
+#endif
+
+                    primitives.emplace_back(tag_type, reinterpret_cast<uint64_t>(itr), static_cast<uint32_t>(str_len));
                     itr += str_len;
                 }
             }
             else
             {
+#if NBT_DEBUG == true
+                std::cout << "Found a list of " << tag_properties[tag_type].name << ": " << std::endl;
+#endif
+
                 for (int32_t index = 0; index < count; index++)
                 {
                     auto array_len = cvt_endian(*(reinterpret_cast<int32_t *>(itr)));
@@ -278,12 +336,27 @@ namespace melon::nbt
                     {
                         case tag_byte_array:
                             cvt_endian_array<int8_t>(array_len, reinterpret_cast<int8_t *>(itr));
+#if NBT_DEBUG == true
+                            for (int index_a = 0; index_a < array_len; index_a++) std::cout << +((int8_t *)(itr))[index_a] << " ";
+                            std::cout << std::endl;
+                            compound::arrays_parsed++;
+#endif
                             break;
                         case tag_int_array:
                             cvt_endian_array<int32_t>(array_len, reinterpret_cast<int32_t *>(itr));
+#if NBT_DEBUG == true
+                            for (int index_a = 0; index_a < array_len; index_a++) std::cout << +((int32_t *)(itr))[index_a] << " ";
+                            std::cout << std::endl;
+                            compound::arrays_parsed++;
+#endif
                             break;
                         case tag_long_array:
                             cvt_endian_array<int64_t>(array_len, reinterpret_cast<int64_t *>(itr));
+#if NBT_DEBUG == true
+                            for (int index_a = 0; index_a < array_len; index_a++) std::cout << +((int64_t *)(itr))[index_a] << " ";
+                            std::cout << std::endl;
+                            compound::arrays_parsed++;
+#endif
                             break;
                         default:
                             // Shouldn't be possible

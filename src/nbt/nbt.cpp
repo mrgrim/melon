@@ -66,6 +66,7 @@ namespace melon::nbt
     void debug_monotonic_buffer_resource::do_deallocate(void *p, std::size_t bytes, std::size_t alignment)
     {
         std::cout << "De-allocated " << bytes << " bytes (no-op).\n";
+        total_bytes_deallocated += bytes;
         monotonic_buffer_resource::do_deallocate(p, bytes, alignment);
     }
 
@@ -82,7 +83,7 @@ namespace melon::nbt
 
     debug_monotonic_buffer_resource::~debug_monotonic_buffer_resource()
     {
-        std::cout << "Destroyed memory resources. Total bytes allocated: " << total_bytes_allocated << "\n";
+        std::cout << "Destroyed memory resources. Total bytes allocated: " << total_bytes_allocated << ", Total bytes deallocated: " << total_bytes_deallocated << "\n";
         monotonic_buffer_resource::~monotonic_buffer_resource();
     }
 }

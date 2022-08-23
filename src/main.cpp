@@ -43,6 +43,12 @@ int main() {
 #if NBT_DEBUG == true
     melon::nbt::compound *parsed_nbt;
     auto *pmr_buf = new std::byte[30000];
+
+    melon::nbt::compound::compounds_parsed = 0;
+    melon::nbt::compound::lists_parsed = 0;
+    melon::nbt::compound::primitives_parsed = 0;
+    melon::nbt::compound::strings_parsed = 0;
+    melon::nbt::compound::arrays_parsed = 0;
 #else
     std::vector<melon::nbt::compound> parsed_nbt;
     parsed_nbt.reserve(10000);

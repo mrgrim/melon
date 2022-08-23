@@ -1,0 +1,3 @@
+F:/Development/Minecraft/Projects/melon/cmake-build-debug-visual-studio/CMakeFiles/melon.dir
+F:/Development/Minecraft/Projects/melon/cmake-build-debug-visual-studio/CMakeFiles/edit_cache.dir
+F:/Development/Minecraft/Projects/melon/cmake-build-debug-visual-studio/CMakeFiles/rebuild_cache.dir

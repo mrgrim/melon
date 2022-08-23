@@ -63,7 +63,6 @@ namespace melon::nbt
               primitives(extract_pmr_rsrc()),
               compounds(extract_pmr_rsrc()),
               lists(extract_pmr_rsrc())
-
     {
         if (raw->size() < 5) throw std::runtime_error("NBT Compound Tag Too Small.");
 
@@ -151,19 +150,18 @@ namespace melon::nbt
             std::cout << "Deleting anonymous compound." << std::endl;
         else
             std::cout << "Deleting compound with name " << name << std::endl;
-#endif
-        delete name_backing;
-
-        primitives.clear();
-        lists.clear();
-        compounds.clear();
 
         if (top == this)
         {
-#if NBT_DEBUG == true
-            std::cout << "Top level compound destructor called." << std::endl;
-#endif
+            std::cout << "Top level compound destructor called.\n";
+            std::cout << "Compounds parsed: " << compounds_parsed << "\n";
+            std::cout << "Lists parsed: " << lists_parsed << "\n";
+            std::cout << "Strings parsed: " << strings_parsed << "\n";
+            std::cout << "Arrays parsed: " << arrays_parsed << "\n";
+            std::cout << "primitives parsed: " << primitives_parsed << std::endl;
         }
+#endif
+        delete name_backing;
     }
 
     compound::compound(std::byte **itr_in, compound *parent_in, bool skip_header)
@@ -176,7 +174,6 @@ namespace melon::nbt
               primitives(extract_pmr_rsrc()),
               compounds(extract_pmr_rsrc()),
               lists(extract_pmr_rsrc())
-
     {
         if (depth > 512) throw std::runtime_error("NBT Depth exceeds 512.");
 
@@ -193,7 +190,6 @@ namespace melon::nbt
               primitives(extract_pmr_rsrc()),
               compounds(extract_pmr_rsrc()),
               lists(extract_pmr_rsrc())
-
     {
         if (depth > 512) throw std::runtime_error("NBT Depth exceeds 512.");
 
@@ -248,6 +244,7 @@ namespace melon::nbt
                 {
 #if NBT_DEBUG == true
                     std::cout << "Found List " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << std::endl;
+                    compound::lists_parsed++;
 #endif
                     lists.emplace(std::piecewise_construct,
                                   std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
@@ -257,6 +254,7 @@ namespace melon::nbt
                 {
 #if NBT_DEBUG == true
                     std::cout << "Found Compound " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << std::endl;
+                    compound::compounds_parsed++;
 #endif
                     compounds.emplace(std::piecewise_construct,
                                       std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
@@ -266,6 +264,7 @@ namespace melon::nbt
             else if (tag_properties[tag_type].size >= 0)
             {
                 uint64_t prim_value;
+
                 // C++14 guarantees the start address is the same across union members making a memcpy safe to do
                 // Always copy 8 bytes because it'll allow the memcpy to be inlined easily.
                 std::memcpy(reinterpret_cast<void *>(&prim_value), reinterpret_cast<void *>(itr), sizeof(prim_value));
@@ -288,6 +287,8 @@ namespace melon::nbt
 #if NBT_DEBUG == true
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wswitch"
+                compound::primitives_parsed++;
+
                 switch (tag_type)
                 {
                     case tag_byte:
@@ -330,6 +331,7 @@ namespace melon::nbt
 #if NBT_DEBUG == true
                     std::cout << "Read string " << std::string_view(reinterpret_cast<char *>(name_ptr), name_len)
                               << ": " << std::string_view(reinterpret_cast<char *>(itr), str_len) << std::endl;
+                    compound::strings_parsed++;
 #endif
                     primitives.emplace(std::piecewise_construct,
                                        std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
@@ -349,6 +351,7 @@ namespace melon::nbt
 
 #if NBT_DEBUG == true
                     std::cout << "Attempting array read of " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << " for " << array_len << " elements." << std::endl;
+                    compound::arrays_parsed++;
 #endif
                     switch (tag_type)
                     {
@@ -426,20 +429,20 @@ namespace melon::nbt
     {
         if (top == this)
         {
-            std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>> ret;
-
             if (pmr_buf == nullptr)
-                ret = std::pmr::get_default_resource();
+                return std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>>{ std::pmr::get_default_resource() };
             else
             {
 #if NBT_DEBUG == true
-                ret = std::make_shared<debug_monotonic_buffer_resource>(pmr_buf, pmr_buf_size);
+                return std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>>{
+                        std::make_shared<debug_monotonic_buffer_resource>(pmr_buf, pmr_buf_size)
+                };
 #else
-                ret = std::make_shared<std::pmr::monotonic_buffer_resource>(pmr_buf, pmr_buf_size);
+                return std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>>{
+                        std::make_shared<std::pmr::monotonic_buffer_resource>(pmr_buf, pmr_buf_size)
+                };
 #endif
             }
-
-            return ret;
         }
         else
             return top->pmr_rsrc;

@@ -25,14 +25,14 @@
 
 namespace melon::nbt
 {
-#define NBT_DEBUG false
+#define NBT_DEBUG true
 
     class list;
 
     struct tag_properties_s
     {
         int8_t size;
-        bool   is_complex;
+        const char *name;
     };
 
 #pragma clang diagnostic push
@@ -100,19 +100,19 @@ namespace melon::nbt
     // 127 means recursion is required
     const static std::array<tag_properties_s, 13>
             tag_properties = {{
-                                      { 0, false },
-                                      { 1, false },
-                                      { 2, false },
-                                      { 4, false },
-                                      { 8, false },
-                                      { 4, false },
-                                      { 8, false },
-                                      { -1, true },
-                                      { -1, true },
-                                      { 127, true },
-                                      { 127, true },
-                                      { -4, true },
-                                      { -8, true }
+                                      { 0, "End" },
+                                      { 1, "Byte" },
+                                      { 2, "Short" },
+                                      { 4, "Int" },
+                                      { 8, "Long" },
+                                      { 4, "Float" },
+                                      { 8, "Double" },
+                                      { -1, "Byte Array" },
+                                      { -1, "String" },
+                                      { 127, "List" },
+                                      { 127, "Compound" },
+                                      { -4, "int Array" },
+                                      { -8, "Long Array" }
                               }};
 
 #pragma clang diagnostic push
@@ -173,6 +173,7 @@ namespace melon::nbt
 
     private:
         int64_t total_bytes_allocated = 0;
+        int64_t total_bytes_deallocated = 0;
     };
 }
 

@@ -46,6 +46,14 @@ namespace melon::nbt
         compound &operator=(compound &&) noexcept;
 
         ~compound();
+
+#if NBT_DEBUG == true
+        inline static uint32_t compounds_parsed;
+        inline static uint32_t lists_parsed;
+        inline static uint32_t primitives_parsed;
+        inline static uint32_t strings_parsed;
+        inline static uint32_t arrays_parsed;
+#endif
     private:
         friend class list;
 

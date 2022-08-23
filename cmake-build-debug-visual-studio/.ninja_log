@@ -1,0 +1,8 @@
+# ninja log v5
+4	688	6828880624352152	CMakeFiles/melon.dir/src/util/deflate.cpp.obj	ad25f31fc3f9a1f1
+6	726	6828880624732137	CMakeFiles/melon.dir/src/util/file.cpp.obj	584bbc32d3d29c93
+13	1076	6828880628232138	CMakeFiles/melon.dir/src/nbt/nbt.cpp.obj	2443b648d2145a48
+10	1350	6828880630972126	CMakeFiles/melon.dir/src/nbt/list.cpp.obj	bf36ba583b2b814
+8	1639	6828880633832176	CMakeFiles/melon.dir/src/nbt/compound.cpp.obj	399f3f595347b9d0
+1	1700	6828880634447123	CMakeFiles/melon.dir/src/main.cpp.obj	ff3af477aeca6928
+1700	1914	6828880636497132	melon.exe	aee881853f8d1311
