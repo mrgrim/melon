@@ -25,15 +25,9 @@
 
 namespace melon::nbt
 {
-#define NBT_DEBUG true
+#define NBT_DEBUG false
 
     class list;
-
-    struct tag_properties_s
-    {
-        int8_t size;
-        const char *name;
-    };
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "OCUnusedGlobalDeclarationInspection"
@@ -55,6 +49,21 @@ namespace melon::nbt
         tag_long_array = 12
     };
 
+    enum tag_category_enum : uint8_t
+    {
+        cat_none      = 0,
+        cat_complex   = 1,
+        cat_primitive = 2,
+        cat_array     = 3
+    };
+
+    struct tag_properties_s
+    {
+        int8_t            size;
+        tag_category_enum category;
+        uint64_t          alignment_mask;
+    };
+
 #pragma clang diagnostic pop
 
     struct primitive_tag
@@ -62,12 +71,12 @@ namespace melon::nbt
         ~primitive_tag();
 
         tag_type_enum tag_type;
-        uint32_t      size;
+        uint32_t      size; // Only used for strings and arrays
 
-        explicit primitive_tag(tag_type_enum type_in, uint64_t value_in, uint32_t size_in = 1) // NOLINT(cppcoreguidelines-pro-type-member-init)
+        explicit primitive_tag(tag_type_enum type_in = tag_byte, uint64_t value_in = 0, [[maybe_unused]] uint32_t size_in = 1) // NOLINT(cppcoreguidelines-pro-type-member-init)
         {
             tag_type = type_in;
-            memcpy((void *)&value, (void *)&value_in, sizeof(value_in));
+            value.generic = value_in;
             size = size_in;
         }
 
@@ -79,6 +88,8 @@ namespace melon::nbt
 
         union
         {
+            uint64_t generic;
+
             int8_t  tag_byte;
             int16_t tag_short;
             int32_t tag_int;
@@ -100,20 +111,26 @@ namespace melon::nbt
     // 127 means recursion is required
     const static std::array<tag_properties_s, 13>
             tag_properties = {{
-                                      { 0, "End" },
-                                      { 1, "Byte" },
-                                      { 2, "Short" },
-                                      { 4, "Int" },
-                                      { 8, "Long" },
-                                      { 4, "Float" },
-                                      { 8, "Double" },
-                                      { -1, "Byte Array" },
-                                      { -1, "String" },
-                                      { 127, "List" },
-                                      { 127, "Compound" },
-                                      { -4, "int Array" },
-                                      { -8, "Long Array" }
+                                      { 0, tag_category_enum::cat_none, 0x00000000 },
+                                      { 1, tag_category_enum::cat_primitive, 0x00000000 },
+                                      { 2, tag_category_enum::cat_primitive, 0x00000001 },
+                                      { 4, tag_category_enum::cat_primitive, 0x00000003 },
+                                      { 8, tag_category_enum::cat_primitive, 0x00000007 },
+                                      { 4, tag_category_enum::cat_primitive, 0x00000003 },
+                                      { 8, tag_category_enum::cat_primitive, 0x00000007 },
+                                      { 1, tag_category_enum::cat_array, 0x00000000 },
+                                      { 1, tag_category_enum::cat_array, 0x00000000 },
+                                      { 127, tag_category_enum::cat_complex, 0x00000000 },
+                                      { 127, tag_category_enum::cat_complex, 0x00000000 },
+                                      { 4, tag_category_enum::cat_array, 0x00000003 },
+                                      { 8, tag_category_enum::cat_array, 0x00000007 }
                               }};
+
+#if NBT_DEBUG == true
+    const static char *tag_printable_names[13]{
+            "End", "Byte", "Short", "Int", "Long", "Float", "Double", "Byte Array", "String", "List", "Compound", "Int Array", "Long Array"
+    };
+#endif
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "Simplify"
@@ -125,6 +142,14 @@ namespace melon::nbt
     {
         if constexpr (std::endian::native == std::endian::little)
             return std::byteswap(value);
+        else
+            return value;
+    }
+
+    uint64_t inline pack_left(uint64_t value, tag_type_enum type)
+    {
+        if constexpr (std::endian::native == std::endian::little)
+            return value >> ((sizeof(uint64_t) - tag_properties[type].size) << 3);
         else
             return value;
     }
@@ -158,8 +183,6 @@ namespace melon::nbt
                 ((T *)(*dst))[index] = cvt_endian<T>(((T *)(*dst))[index]);
     }
 
-    std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>> get_std_default_pmr_rsrc();
-
     class debug_monotonic_buffer_resource : public std::pmr::monotonic_buffer_resource
     {
     public:
@@ -169,10 +192,10 @@ namespace melon::nbt
     protected:
         void *do_allocate(std::size_t bytes, std::size_t alignment) override;
         void do_deallocate(void *p, std::size_t bytes, std::size_t alignment) override;
-        bool do_is_equal(const std::pmr::memory_resource &other) const noexcept override;
+        [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource &other) const noexcept override;
 
     private:
-        int64_t total_bytes_allocated = 0;
+        int64_t total_bytes_allocated   = 0;
         int64_t total_bytes_deallocated = 0;
     };
 }

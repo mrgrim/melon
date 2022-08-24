@@ -30,9 +30,8 @@ namespace melon::nbt
 
         compound() = delete;
 
-        explicit compound(std::optional<std::variant<compound *, list *>> parent_in = std::nullopt, int64_t max_size_in = -1, std::byte *pmr_buf = nullptr,
-                          int64_t pmr_buf_suze = 8632);
-        explicit compound(std::unique_ptr<std::vector<std::byte>> raw_in, std::byte *pmr_buf = nullptr, int64_t pmr_buf_suze = 8632);
+        explicit compound(std::optional<std::variant<compound *, list *>> parent_in = std::nullopt, int64_t max_size_in = -1, std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
+        explicit compound(std::unique_ptr<std::vector<std::byte>> raw_in, std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
 
         // I'd honestly prefer these to be private, but that'd require either a custom allocator or an intermediate class
         // that would add temporary objects I'm trying to avoid
@@ -60,13 +59,10 @@ namespace melon::nbt
         std::byte *read(std::byte *itr, bool skip_header = false);
 
         const compound *extract_top_compound();
-        std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>> construct_pmr_rsrc(std::byte *pmr_buf, int64_t pmr_buf_size) const;
-        std::pmr::memory_resource *extract_pmr_rsrc();
 
-        std::optional<std::variant<compound *, list *>>     parent = std::nullopt;
-        const compound                                      *top;
-        std::variant<std::pmr::memory_resource *,
-                std::shared_ptr<std::pmr::memory_resource>> pmr_rsrc;
+        std::optional<std::variant<compound *, list *>> parent = std::nullopt;
+        const compound                                  *top;
+        std::pmr::memory_resource                       *pmr_rsrc = std::pmr::get_default_resource();
 
         std::pmr::unordered_map<std::string_view, primitive_tag> primitives;
         std::pmr::unordered_map<std::string_view, compound>      compounds;

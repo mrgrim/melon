@@ -2,20 +2,19 @@
 #include <vector>
 #include <cstring>
 #include <memory>
+#include <memory_resource>
 #include <chrono>
 
 #include "util/deflate.h"
 #include "util/file.h"
 #include "nbt/compound.h"
 
-//#define NBT_DEBUG true
-
 int main() {
     std::vector<char> gz_buffer;
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    if (melon::util::file_to_vec(R"(E:\Games\Minecraft\Servers\Fabric\World\level.dat)", gz_buffer))
+    if (melon::util::file_to_vec(R"(/mnt/e/Games/Minecraft/Servers/Fabric/World/level.dat)", gz_buffer))
     {
         std::cerr << "Unable to load level.dat: " << strerror(errno) << std::endl;
         return 1;
@@ -42,7 +41,9 @@ int main() {
 
 #if NBT_DEBUG == true
     melon::nbt::compound *parsed_nbt;
-    auto *pmr_buf = new std::byte[30000];
+
+    auto pmr_buf = malloc(30000);
+    std::pmr::memory_resource *pmr_rsrc = new melon::nbt::debug_monotonic_buffer_resource(pmr_buf, 30000);
 
     melon::nbt::compound::compounds_parsed = 0;
     melon::nbt::compound::lists_parsed = 0;
@@ -55,14 +56,12 @@ int main() {
 
     std::vector<std::unique_ptr<std::vector<std::byte>>> nbt_data_copies;
     nbt_data_copies.reserve(10000);
-    auto pmr_buffers = std::array<std::byte *, 10000>();
+
+    auto pmr_buf = malloc(30000 * 10000);
+    std::pmr::memory_resource *pmr_rsrc = new std::pmr::monotonic_buffer_resource(pmr_buf, 30000 * 10000);
 
     for (int index = 0; index < 10000; index++)
-    {
         nbt_data_copies.push_back(std::make_unique<std::vector<std::byte>>(nbt_data));
-        pmr_buffers[index] = new std::byte[30000];
-    }
-
 #endif
 
     try
@@ -70,10 +69,10 @@ int main() {
         start = std::chrono::high_resolution_clock::now();
 
 #if NBT_DEBUG == true
-        parsed_nbt = new melon::nbt::compound(std::move(std::make_unique<std::vector<std::byte>>(nbt_data)), pmr_buf, 30000);
+        parsed_nbt = new melon::nbt::compound(std::move(std::make_unique<std::vector<std::byte>>(nbt_data)), pmr_rsrc);
 #else
         for (int index = 0; index < 10000; index++)
-            parsed_nbt.emplace_back(std::move(nbt_data_copies[index]), pmr_buffers[index], 30000);
+            parsed_nbt.emplace_back(std::move(nbt_data_copies[index]), pmr_rsrc);
 #endif
 
         end = std::chrono::high_resolution_clock::now();
@@ -90,10 +89,10 @@ int main() {
     delete parsed_nbt;
 #else
     parsed_nbt.clear();
-
-    for (int index = 0; index < 10000; index++)
-        delete pmr_buffers[index];
 #endif
+
+    delete pmr_rsrc;
+    free(pmr_buf);
 
     std::cout << "Deleted parsed NBT." << std::endl;
 

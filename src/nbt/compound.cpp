@@ -22,13 +22,13 @@ namespace melon::nbt
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "LocalValueEscapesScope"
 
-    compound::compound(std::optional<std::variant<compound *, list *>> parent_in, int64_t max_size_in, std::byte *pmr_buf, int64_t pmr_buf_size)
+    compound::compound(std::optional<std::variant<compound *, list *>> parent_in, int64_t max_size_in, std::pmr::memory_resource *pmr_rsrc_in)
             : parent(parent_in),
               top(extract_top_compound()),
-              pmr_rsrc(construct_pmr_rsrc(pmr_buf, pmr_buf_size)),
-              primitives(extract_pmr_rsrc()),
-              compounds(extract_pmr_rsrc()),
-              lists(extract_pmr_rsrc())
+              pmr_rsrc(pmr_rsrc_in),
+              primitives(pmr_rsrc_in),
+              compounds(pmr_rsrc_in),
+              lists(pmr_rsrc_in)
     {
         if (parent)
         {
@@ -54,15 +54,15 @@ namespace melon::nbt
         }
     }
 
-    compound::compound(std::unique_ptr<std::vector<std::byte>> raw_in, std::byte *pmr_buf, int64_t pmr_buf_size)
+    compound::compound(std::unique_ptr<std::vector<std::byte>> raw_in, std::pmr::memory_resource *pmr_rsrc_in)
             : depth(1),
               max_size(-1),
               top(this),
               raw(std::move(raw_in)),
-              pmr_rsrc(construct_pmr_rsrc(pmr_buf, pmr_buf_size)),
-              primitives(extract_pmr_rsrc()),
-              compounds(extract_pmr_rsrc()),
-              lists(extract_pmr_rsrc())
+              pmr_rsrc(pmr_rsrc_in),
+              primitives(pmr_rsrc_in),
+              compounds(pmr_rsrc_in),
+              lists(pmr_rsrc_in)
     {
         if (raw->size() < 5) throw std::runtime_error("NBT Compound Tag Too Small.");
 
@@ -78,7 +78,7 @@ namespace melon::nbt
             raw->reserve(raw->size() + 8);
         }
 
-        read(raw->data(), false);
+        read(raw->data());
     }
 
 #pragma clang diagnostic pop
@@ -92,12 +92,13 @@ namespace melon::nbt
               readonly(in.readonly),
               parent(in.parent),
               top(in.top),
-              pmr_rsrc(get_std_default_pmr_rsrc()),
               name_backing(in.name_backing),
               primitives(std::move(in.primitives)),
               compounds(std::move(in.compounds)),
               lists(std::move(in.lists))
     {
+        std::cerr << "!!! Moving compound via ctor: " << name << "!" << std::endl;
+
         in.name_backing = nullptr;
         in.parent       = std::nullopt;
 
@@ -113,6 +114,8 @@ namespace melon::nbt
     {
         if (this != &in)
         {
+            std::cerr << "!!! Moving compound via operator=: " << in.name << "!" << std::endl;
+
             delete (name_backing);
 
             name   = in.name;
@@ -171,9 +174,9 @@ namespace melon::nbt
               parent(parent_in->parent),
               top(parent_in->top),
               pmr_rsrc(parent_in->top->pmr_rsrc),
-              primitives(extract_pmr_rsrc()),
-              compounds(extract_pmr_rsrc()),
-              lists(extract_pmr_rsrc())
+              primitives(parent_in->top->pmr_rsrc),
+              compounds(parent_in->top->pmr_rsrc),
+              lists(parent_in->top->pmr_rsrc)
     {
         if (depth > 512) throw std::runtime_error("NBT Depth exceeds 512.");
 
@@ -187,9 +190,9 @@ namespace melon::nbt
               parent(parent_in->parent),
               top(parent_in->top),
               pmr_rsrc(parent_in->top->pmr_rsrc),
-              primitives(extract_pmr_rsrc()),
-              compounds(extract_pmr_rsrc()),
-              lists(extract_pmr_rsrc())
+              primitives(parent_in->top->pmr_rsrc),
+              compounds(parent_in->top->pmr_rsrc),
+              lists(parent_in->top->pmr_rsrc)
     {
         if (depth > 512) throw std::runtime_error("NBT Depth exceeds 512.");
 
@@ -203,42 +206,35 @@ namespace melon::nbt
 
     std::byte *compound::read(std::byte *itr, bool skip_header)
     {
+        static_assert(sizeof(tag_type_enum) == sizeof(std::byte));
+
         auto itr_start = itr;
         auto itr_end   = top->raw->data() + top->raw->size();
 
-        if (!skip_header)
+        if (static_cast<tag_type_enum>(*itr) != tag_compound) [[unlikely]] throw std::runtime_error("NBT Tag Type Not Compound.");
+
+        uint16_t name_len;
+        std::memcpy(&name_len, itr + 1, sizeof(name_len));
+        name_len = cvt_endian(name_len);
+
+        name = std::string_view(reinterpret_cast<char *>(itr + 3), name_len & (static_cast<int16_t>(skip_header) - 1));
+
+        itr += (name_len + sizeof(name_len) + sizeof(tag_type_enum)) & (static_cast<int16_t>(skip_header) - 1);
+
+        auto tag_type = static_cast<tag_type_enum>(*itr++);
+        if (tag_type >= tag_properties.size()) [[unlikely]] throw std::runtime_error("Invalid NBT Tag Type.");
+
+        while ((itr_end - itr) && tag_type != tag_end)
         {
-            if (static_cast<tag_type_enum>(*itr++) != tag_compound) throw std::runtime_error("NBT Tag Type Not Compound.");
+            std::memcpy(&name_len, itr, sizeof(name_len));
+            name_len = cvt_endian(name_len);
 
-            const auto name_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
-            itr += 2;
+            const auto name_ptr = itr + sizeof(name_len);
+            itr += sizeof(name_len) + name_len;
 
-            name = std::string_view(reinterpret_cast<char *>(itr), name_len);
-
-            itr += name_len;
-        }
-
-        while (itr < itr_end)
-        {
-            auto tag_type = static_cast<tag_type_enum>(*itr++);
-            if (tag_type >= tag_properties.size()) throw std::runtime_error("Invalid NBT Tag Type.");
-
-            if (tag_type == tag_end)
+            if (tag_properties[tag_type].category == cat_complex)
             {
-#if NBT_DEBUG == true
-                std::cout << "Found end tag." << std::endl;
-#endif
-                break;
-            }
-
-            const auto name_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
-            itr += 2;
-            const auto name_ptr = itr;
-            itr += name_len;
-
-            if (tag_properties[tag_type].size == 127)
-            {
-                itr -= 3 + name_len;
+                itr -= name_len + sizeof(name_len) + sizeof(tag_type_enum); // Roll back to start of tag for recursive processing
 
                 if (tag_type == tag_list)
                 {
@@ -261,72 +257,63 @@ namespace melon::nbt
                                       std::forward_as_tuple(&itr, this));
                 }
             }
-            else if (tag_properties[tag_type].size >= 0)
+            else if (tag_properties[tag_type].category == cat_primitive)
             {
                 uint64_t prim_value;
 
                 // C++14 guarantees the start address is the same across union members making a memcpy safe to do
                 // Always copy 8 bytes because it'll allow the memcpy to be inlined easily.
                 std::memcpy(reinterpret_cast<void *>(&prim_value), reinterpret_cast<void *>(itr), sizeof(prim_value));
+                prim_value = cvt_endian(prim_value);
 
-                // Change endianness based on type size to keep it to these 3 cases. The following code should compile
-                // away on big endian systems.
-                switch (tag_properties[tag_type].size)
-                {
-                    case 2:
-                        *(reinterpret_cast<uint16_t *>(&prim_value)) = cvt_endian(*(reinterpret_cast<uint16_t *>(&prim_value)));
-                        break;
-                    case 4:
-                        *(reinterpret_cast<uint32_t *>(&prim_value)) = cvt_endian(*(reinterpret_cast<uint32_t *>(&prim_value)));
-                        break;
-                    case 8:
-                        prim_value = cvt_endian(prim_value);
-                        break;
-                }
+                // Pack the value to the left so when read from the union with the proper type it will be correct.
+                prim_value = pack_left(prim_value, tag_type);
+                primitives.emplace(std::piecewise_construct,
+                                   std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
+                                   std::forward_as_tuple(tag_type, prim_value));
+
+                itr += tag_properties[tag_type].size;
 
 #if NBT_DEBUG == true
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wswitch"
                 compound::primitives_parsed++;
 
+                std::cout << "Found " << tag_printable_names[tag_type] << " primitive " << std::string_view(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
                 switch (tag_type)
                 {
                     case tag_byte:
-                        std::cout << "Found byte primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << +(*((int8_t *)(&prim_value)))
-                                  << std::endl;
+                        std::cout << +primitives[std::string_view(reinterpret_cast<char *>(name_ptr), name_len)].value.tag_byte << std::endl;
                         break;
                     case tag_short:
-                        std::cout << "Found short primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((int16_t *)(&prim_value)) << std::endl;
+                        std::cout << primitives[std::string_view(reinterpret_cast<char *>(name_ptr), name_len)].value.tag_short << std::endl;
                         break;
                     case tag_int:
-                        std::cout << "Found int primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((int32_t *)(&prim_value)) << std::endl;
+                        std::cout << primitives[std::string_view(reinterpret_cast<char *>(name_ptr), name_len)].value.tag_int << std::endl;
                         break;
                     case tag_long:
-                        std::cout << "Found long primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((int64_t *)(&prim_value)) << std::endl;
+                        std::cout << primitives[std::string_view(reinterpret_cast<char *>(name_ptr), name_len)].value.tag_long << std::endl;
                         break;
                     case tag_float:
-                        std::cout << "Found float primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((float *)(&prim_value)) << std::endl;
+                        std::cout << primitives[std::string_view(reinterpret_cast<char *>(name_ptr), name_len)].value.tag_float << std::endl;
                         break;
                     case tag_double:
-                        std::cout << "Found double primitive " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": " << *((double *)(&prim_value)) << std::endl;
+                        std::cout << primitives[std::string_view(reinterpret_cast<char *>(name_ptr), name_len)].value.tag_double << std::endl;
                         break;
                 }
 #pragma clang diagnostic pop
 #endif
-                primitives.emplace(std::piecewise_construct,
-                                   std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
-                                   std::forward_as_tuple(tag_type, *(reinterpret_cast<uint64_t *>(&prim_value))));
-
-                itr += tag_properties[tag_type].size;
             }
-            else if (tag_properties[tag_type].size < 0)
+            else if (tag_properties[tag_type].category == cat_array)
             {
                 if (tag_type == tag_string)
                 {
                     // Reminder: NBT strings are "Modified UTF-8" and not null terminated.
                     // https://en.wikipedia.org/wiki/UTF-8#Modified_UTF-8
-                    const auto str_len = cvt_endian(*(reinterpret_cast<uint16_t *>(itr)));
-                    itr += 2;
+                    uint16_t str_len;
+                    std::memcpy(&str_len, itr, sizeof(str_len));
+                    str_len = cvt_endian(str_len);
+                    itr += sizeof(str_len);
 
 #if NBT_DEBUG == true
                     std::cout << "Read string " << std::string_view(reinterpret_cast<char *>(name_ptr), name_len)
@@ -335,7 +322,7 @@ namespace melon::nbt
 #endif
                     primitives.emplace(std::piecewise_construct,
                                        std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
-                                       std::forward_as_tuple(tag_type, (uint64_t)itr, static_cast<uint32_t>(str_len)));
+                                       std::forward_as_tuple(tag_type, reinterpret_cast<uint64_t>(itr), static_cast<uint32_t>(str_len)));
 
                     itr += str_len;
 
@@ -343,74 +330,93 @@ namespace melon::nbt
                 }
                 else
                 {
-                    // This approach of swapping the arrays in place avoids allocating memory, but could be expensive or even illegal for architectures that
-                    // require aligned access. I need a way to detect this and compensate at runtime. We have 6 bytes of wiggle room (5 at the head, 1 at the tail) to
-                    // move the array. Even that would technically be UB since to check the offset would require performing a bitwise operation on the pointer.
-                    const auto array_len = cvt_endian(*(reinterpret_cast<int32_t *>(itr)));
-                    itr += 4;
+                    int32_t array_len;
+                    std::memcpy(&array_len, itr, sizeof(array_len));
+                    array_len = cvt_endian(array_len);
+                    itr += sizeof(array_len);
 
 #if NBT_DEBUG == true
                     std::cout << "Attempting array read of " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << " for " << array_len << " elements." << std::endl;
                     compound::arrays_parsed++;
+
+                    if ((uint64_t)itr & tag_properties[tag_type].alignment_mask)
+                        std::cerr << "!!! Array pointer misaligned by " << ((uint64_t)itr & tag_properties[tag_type].alignment_mask) << " bytes." << std::endl;
 #endif
-                    switch (tag_type)
+
+                    // My take on a branchless conversion of an unaligned big endian array of an arbitrarily sized data type to an aligned little endian array.
+                    auto *array_ptr = static_cast<std::byte *>(pmr_rsrc->allocate(array_len * tag_properties[tag_type].size + 8, tag_properties[tag_type].size));
+                    auto *array_ptr_start = array_ptr;
+
+                    for (auto array_idx = 0; array_idx < array_len; array_idx++)
                     {
-                        case tag_byte_array:
-#if NBT_DEBUG == true
-                            std::cout << "Byte Array Processing." << std::endl;
-#endif
-                            cvt_endian_array<int8_t>(array_len, reinterpret_cast<int8_t *>(itr));
-#if NBT_DEBUG == true
-                            std::cout << "Read byte array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
-                            for (int index = 0; index < array_len; index++) std::cout << +((int8_t *)(itr))[index] << " ";
-                            std::cout << std::endl;
-#endif
-                            break;
-                        case tag_int_array:
-#if NBT_DEBUG == true
-                            std::cout << "Int Array Processing." << std::endl;
-#endif
-                            cvt_endian_array<int32_t>(array_len, reinterpret_cast<int32_t *>(itr));
-#if NBT_DEBUG == true
-                            std::cout << "Read int array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
-                            for (int index = 0; index < array_len; index++) std::cout << +((int32_t *)(itr))[index] << " ";
-                            std::cout << std::endl;
-#endif
-                            break;
-                        case tag_long_array:
-#if NBT_DEBUG == true
-                            std::cout << "Long Array Processing." << std::endl;
-#endif
-                            cvt_endian_array<int64_t>(array_len, reinterpret_cast<int64_t *>(itr));
-#if NBT_DEBUG == true
-                            std::cout << "Read long array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
-                            for (int index = 0; index < array_len; index++) std::cout << +((int64_t *)(itr))[index] << " ";
-                            std::cout << std::endl;
-#endif
-                            break;
-                        default:
-                            // Shouldn't be possible
-                            throw std::runtime_error("Unexpected NBT Array Type.");
+                        uint64_t prim_value;
+
+                        std::memcpy(reinterpret_cast<void *>(&prim_value), reinterpret_cast<void *>(itr), sizeof(prim_value));
+
+                        prim_value = cvt_endian(prim_value);
+                        prim_value = pack_left(prim_value, tag_type);
+
+                        std::memcpy(array_ptr, reinterpret_cast<void *>(&prim_value), sizeof(prim_value));
+
+                        array_ptr += tag_properties[tag_type].size;
+                        itr += tag_properties[tag_type].size;
                     }
 
                     primitives.emplace(std::piecewise_construct,
                                        std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
-                                       std::forward_as_tuple(tag_type, (uint64_t)itr, static_cast<uint32_t>(array_len)));
+                                       std::forward_as_tuple(tag_type, reinterpret_cast<uint64_t>(array_ptr_start), static_cast<uint32_t>(array_len)));
 
-                    itr += array_len * (tag_properties[tag_type].size * -1);
+#if NBT_DEBUG == true
+                    switch (tag_type)
+                    {
+                        case tag_byte_array:
+                            std::cout << "Read byte array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
+                            for (int index = 0; index < array_len; index++)
+                                std::cout << +primitives[std::string_view(reinterpret_cast<char *>(name_ptr), name_len)].value.tag_byte_array[index] << " ";
+                            std::cout << std::endl;
+                            break;
+                        case tag_int_array:
+                            std::cout << "Read int array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
+                            for (int index = 0; index < array_len; index++)
+                                std::cout << +primitives[std::string_view(reinterpret_cast<char *>(name_ptr), name_len)].value.tag_int_array[index] << " ";
+                            std::cout << std::endl;
+                            break;
+                        case tag_long_array:
+                            std::cout << "Read long array " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << ": ";
+                            for (int index = 0; index < array_len; index++)
+                                std::cout << +primitives[std::string_view(reinterpret_cast<char *>(name_ptr), name_len)].value.tag_long_array[index] << " ";
+                            std::cout << std::endl;
+                            break;
+                        default:
+                            // Shouldn't be possible
+                            [[unlikely]] throw std::runtime_error("Unexpected NBT Array Type.");
+                    }
+#endif
                 }
             }
+
+            tag_type = static_cast<tag_type_enum>(*itr++);
+            if (tag_type >= tag_properties.size()) [[unlikely]] throw std::runtime_error("Invalid NBT Tag Type.");
         }
 
         size = itr - itr_start;
 #if NBT_DEBUG == true
         if (depth == 1) std::cout << "Parsed " << size << " bytes of NBT data." << std::endl;
+
+        if (tag_type == tag_end)
+        {
+            std::cout << "Found end tag";
+        }
+
+        if (!(itr_end - itr))
+        {
+            std::cout << " and found end of iterator";
+        }
+
+        std::cout << "." << std::endl;
 #endif
 
-        if (depth == 1)
-            return nullptr;
-        else
-            return itr;
+        return itr;
     }
 
     const compound *compound::extract_top_compound()
@@ -424,37 +430,5 @@ namespace melon::nbt
         }
         return this;
     }
-
-    std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>> compound::construct_pmr_rsrc(std::byte *pmr_buf, int64_t pmr_buf_size) const
-    {
-        if (top == this)
-        {
-            if (pmr_buf == nullptr)
-                return std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>>{ std::pmr::get_default_resource() };
-            else
-            {
-#if NBT_DEBUG == true
-                return std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>>{
-                        std::make_shared<debug_monotonic_buffer_resource>(pmr_buf, pmr_buf_size)
-                };
-#else
-                return std::variant<std::pmr::memory_resource *, std::shared_ptr<std::pmr::memory_resource>>{
-                        std::make_shared<std::pmr::monotonic_buffer_resource>(pmr_buf, pmr_buf_size)
-                };
-#endif
-            }
-        }
-        else
-            return top->pmr_rsrc;
-    }
-
-    std::pmr::memory_resource *compound::extract_pmr_rsrc()
-    {
-        if (std::holds_alternative<std::shared_ptr<std::pmr::memory_resource>>(pmr_rsrc))
-            return std::get<std::shared_ptr<std::pmr::memory_resource>>(pmr_rsrc).get();
-        else
-            return std::get<std::pmr::memory_resource *>(pmr_rsrc);
-    }
-
 #pragma clang diagnostic pop
 }

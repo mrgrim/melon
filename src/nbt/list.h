@@ -47,12 +47,10 @@ namespace melon::nbt
         std::byte *read(std::byte *itr, bool skip_header = false);
 
         const compound *extract_top_compound();
-        std::pmr::memory_resource *extract_pmr_rsrc();
 
-        std::variant<compound *, list *>                    parent;
-        const compound                                      *top;
-        std::variant<std::pmr::memory_resource *,
-                std::shared_ptr<std::pmr::memory_resource>> pmr_rsrc;
+        std::variant<compound *, list *> parent;
+        const compound                   *top;
+        std::pmr::memory_resource        *pmr_rsrc = std::pmr::get_default_resource();
 
         std::pmr::vector<primitive_tag> primitives;
         std::pmr::vector<list>          lists;
