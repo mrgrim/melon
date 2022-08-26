@@ -25,18 +25,17 @@ namespace melon::nbt
         std::unique_ptr<std::vector<std::byte>> raw = nullptr;
 
     public:
-        uint64_t         size = 0;
         std::string_view name;
 
         compound() = delete;
 
-        explicit compound(std::optional<std::variant<compound *, list *>> parent_in = std::nullopt, int64_t max_size_in = -1, std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
+        explicit compound(std::optional<std::variant<compound *, list *>> parent_in = std::nullopt, int64_t max_size_in = -1,
+                          std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
         explicit compound(std::unique_ptr<std::vector<std::byte>> raw_in, std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
 
         // I'd honestly prefer these to be private, but that'd require either a custom allocator or an intermediate class
         // that would add temporary objects I'm trying to avoid
-        explicit compound(std::byte **itr_in, compound *parent_in, bool skip_header = false);
-        explicit compound(std::byte **itr_in, list *parent_in, bool skip_header = false);
+        explicit compound(std::byte **itr_in, std::variant<compound *, list *>, bool skip_header = false);
 
         compound(const compound &) = delete;
         compound &operator=(const compound &) = delete;
@@ -58,21 +57,19 @@ namespace melon::nbt
 
         std::byte *read(std::byte *itr, bool skip_header = false);
 
-        const compound *extract_top_compound();
-
-        std::optional<std::variant<compound *, list *>> parent = std::nullopt;
-        const compound                                  *top;
+        std::optional<std::variant<compound *, list *>> parent    = std::nullopt;
+        compound                                        *top;
         std::pmr::memory_resource                       *pmr_rsrc = std::pmr::get_default_resource();
 
         std::pmr::unordered_map<std::string_view, primitive_tag> primitives;
         std::pmr::unordered_map<std::string_view, compound>      compounds;
         std::pmr::unordered_map<std::string_view, list>          lists;
 
-        uint16_t    depth         = 0;
-        uint64_t    size_tracking = 0;
-        int64_t     max_size      = -1;
-        bool        readonly      = false;
-        std::string *name_backing = nullptr;
+        std::pmr::string *name_backing = nullptr;
+
+        uint16_t depth    = 0;
+        uint64_t size     = 0;
+        int64_t  max_size = -1;
     };
 }
 

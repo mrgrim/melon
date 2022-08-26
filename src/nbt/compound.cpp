@@ -16,36 +16,29 @@
 #include <source_location>
 #endif
 
+// For details on the file format go to: https://minecraft.fandom.com/wiki/NBT_format#Binary_format
+
 namespace melon::nbt
 {
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "LocalValueEscapesScope"
 
-    compound::compound(std::optional<std::variant<compound *, list *>> parent_in, int64_t max_size_in, std::pmr::memory_resource *pmr_rsrc_in)
+    compound::compound(std::optional<std::variant<compound *, list *>> parent_in, int64_t max_size_in,
+                       std::pmr::memory_resource *pmr_rsrc_in)
             : parent(parent_in),
-              top(extract_top_compound()),
+              top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in.value_or(this))),
               pmr_rsrc(pmr_rsrc_in),
-              primitives(pmr_rsrc_in),
-              compounds(pmr_rsrc_in),
-              lists(pmr_rsrc_in)
+              primitives(pmr_rsrc),
+              compounds(pmr_rsrc),
+              lists(pmr_rsrc)
     {
         if (parent)
         {
-            if (std::holds_alternative<list *>(parent.value()))
-            {
-                auto parent_l = std::get<list *>(parent.value());
-
-                depth    = parent_l->depth + 1;
-                max_size = parent_l->max_size;
-            }
-            else
-            {
-                auto parent_l = std::get<compound *>(parent.value());
-
-                depth    = parent_l->depth + 1;
-                max_size = parent_l->max_size;
-            }
+            std::visit([this](auto &&tag) {
+                depth    = tag->depth + 1;
+                max_size = tag->max_size;
+            }, parent_in.value());
         }
         else
         {
@@ -60,13 +53,13 @@ namespace melon::nbt
               top(this),
               raw(std::move(raw_in)),
               pmr_rsrc(pmr_rsrc_in),
-              primitives(pmr_rsrc_in),
-              compounds(pmr_rsrc_in),
-              lists(pmr_rsrc_in)
+              primitives(pmr_rsrc),
+              compounds(pmr_rsrc),
+              lists(pmr_rsrc)
     {
         if (raw->size() < 5) throw std::runtime_error("NBT Compound Tag Too Small.");
 
-        if ((raw->max_size() - raw->size()) < 8)
+        if ((raw->capacity() - raw->size()) < 8)
         {
             // Later on we intentionally read up to 8 bytes past arbitrary locations so need the buffer to be 8 bytes
             // larger than the size of the data in it.
@@ -87,12 +80,12 @@ namespace melon::nbt
             : size(in.size),
               name(in.name),
               depth(in.depth),
-              size_tracking(in.size_tracking),
               max_size(in.max_size),
-              readonly(in.readonly),
               parent(in.parent),
               top(in.top),
+              raw(std::move(in.raw)),
               name_backing(in.name_backing),
+              pmr_rsrc(in.pmr_rsrc),
               primitives(std::move(in.primitives)),
               compounds(std::move(in.compounds)),
               lists(std::move(in.lists))
@@ -101,13 +94,13 @@ namespace melon::nbt
 
         in.name_backing = nullptr;
         in.parent       = std::nullopt;
+        in.top          = nullptr;
 
-        in.name          = std::string_view();
-        in.size          = 0;
-        in.depth         = 1;
-        in.size_tracking = 0;
-        in.max_size      = -1;
-        in.readonly      = false;
+        in.name     = std::string_view();
+        in.size     = 0;
+        in.depth    = 1;
+        in.max_size = -1;
+        in.pmr_rsrc = std::pmr::get_default_resource();
     }
 
     compound &compound::operator=(compound &&in) noexcept
@@ -120,27 +113,28 @@ namespace melon::nbt
 
             name   = in.name;
             parent = in.parent;
+            top    = in.top;
 
-            size          = in.size;
-            depth         = in.depth;
-            size_tracking = in.size_tracking;
-            max_size      = in.max_size;
-            readonly      = in.readonly;
-            name_backing  = in.name_backing;
+            size         = in.size;
+            depth        = in.depth;
+            max_size     = in.max_size;
+            name_backing = in.name_backing;
+            pmr_rsrc     = in.pmr_rsrc;
 
+            raw        = std::move(in.raw);
             primitives = std::move(in.primitives);
             compounds  = std::move(in.compounds);
             lists      = std::move(in.lists);
 
             in.name   = std::string_view();
             in.parent = std::nullopt;
+            in.top    = nullptr;
 
-            in.size          = 0;
-            in.depth         = 1;
-            in.size_tracking = 0;
-            in.max_size      = -1;
-            in.readonly      = false;
-            in.name_backing  = nullptr;
+            in.size         = 0;
+            in.depth        = 1;
+            in.max_size     = -1;
+            in.name_backing = nullptr;
+            in.pmr_rsrc     = std::pmr::get_default_resource();
         }
 
         return *this;
@@ -167,38 +161,23 @@ namespace melon::nbt
         delete name_backing;
     }
 
-    compound::compound(std::byte **itr_in, compound *parent_in, bool skip_header)
-            : depth(parent_in->depth + 1),
-              max_size(parent_in->max_size),
-              size_tracking(parent_in->size_tracking),
-              parent(parent_in->parent),
-              top(parent_in->top),
-              pmr_rsrc(parent_in->top->pmr_rsrc),
-              primitives(parent_in->top->pmr_rsrc),
-              compounds(parent_in->top->pmr_rsrc),
-              lists(parent_in->top->pmr_rsrc)
+    compound::compound(std::byte **itr_in, std::variant<compound *, list *> parent_in, bool skip_header)
+            : parent(parent_in),
+              top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
+              pmr_rsrc(top->pmr_rsrc),
+              primitives(pmr_rsrc),
+              compounds(pmr_rsrc),
+              lists(pmr_rsrc)
     {
         if (depth > 512) throw std::runtime_error("NBT Depth exceeds 512.");
 
-        *itr_in = read(*itr_in, skip_header);
-    }
-
-    compound::compound(std::byte **itr_in, list *parent_in, bool skip_header)
-            : depth(parent_in->depth + 1),
-              max_size(parent_in->max_size),
-              size_tracking(parent_in->size_tracking),
-              parent(parent_in->parent),
-              top(parent_in->top),
-              pmr_rsrc(parent_in->top->pmr_rsrc),
-              primitives(parent_in->top->pmr_rsrc),
-              compounds(parent_in->top->pmr_rsrc),
-              lists(parent_in->top->pmr_rsrc)
-    {
-        if (depth > 512) throw std::runtime_error("NBT Depth exceeds 512.");
+        std::visit([this](auto &&tag) {
+            depth    = tag->depth + 1;
+            max_size = tag->max_size;
+        }, parent_in);
 
         *itr_in = read(*itr_in, skip_header);
     }
-
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "misc-no-recursion"
@@ -259,20 +238,9 @@ namespace melon::nbt
             }
             else if (tag_properties[tag_type].category == cat_primitive)
             {
-                uint64_t prim_value;
-
-                // C++14 guarantees the start address is the same across union members making a memcpy safe to do
-                // Always copy 8 bytes because it'll allow the memcpy to be inlined easily.
-                std::memcpy(reinterpret_cast<void *>(&prim_value), reinterpret_cast<void *>(itr), sizeof(prim_value));
-                prim_value = cvt_endian(prim_value);
-
-                // Pack the value to the left so when read from the union with the proper type it will be correct.
-                prim_value = pack_left(prim_value, tag_type);
                 primitives.emplace(std::piecewise_construct,
                                    std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
-                                   std::forward_as_tuple(tag_type, prim_value));
-
-                itr += tag_properties[tag_type].size;
+                                   std::forward_as_tuple(tag_type, read_tag_primitive(&itr, tag_type)));
 
 #if NBT_DEBUG == true
 #pragma clang diagnostic push
@@ -330,41 +298,11 @@ namespace melon::nbt
                 }
                 else
                 {
-                    int32_t array_len;
-                    std::memcpy(&array_len, itr, sizeof(array_len));
-                    array_len = cvt_endian(array_len);
-                    itr += sizeof(array_len);
-
-#if NBT_DEBUG == true
-                    std::cout << "Attempting array read of " << std::string(reinterpret_cast<char *>(name_ptr), name_len) << " for " << array_len << " elements." << std::endl;
-                    compound::arrays_parsed++;
-
-                    if ((uint64_t)itr & tag_properties[tag_type].alignment_mask)
-                        std::cerr << "!!! Array pointer misaligned by " << ((uint64_t)itr & tag_properties[tag_type].alignment_mask) << " bytes." << std::endl;
-#endif
-
-                    // My take on a branchless conversion of an unaligned big endian array of an arbitrarily sized data type to an aligned little endian array.
-                    auto *array_ptr = static_cast<std::byte *>(pmr_rsrc->allocate(array_len * tag_properties[tag_type].size + 8, tag_properties[tag_type].size));
-                    auto *array_ptr_start = array_ptr;
-
-                    for (auto array_idx = 0; array_idx < array_len; array_idx++)
-                    {
-                        uint64_t prim_value;
-
-                        std::memcpy(reinterpret_cast<void *>(&prim_value), reinterpret_cast<void *>(itr), sizeof(prim_value));
-
-                        prim_value = cvt_endian(prim_value);
-                        prim_value = pack_left(prim_value, tag_type);
-
-                        std::memcpy(array_ptr, reinterpret_cast<void *>(&prim_value), sizeof(prim_value));
-
-                        array_ptr += tag_properties[tag_type].size;
-                        itr += tag_properties[tag_type].size;
-                    }
+                    auto [array_ptr, array_len] = read_tag_array(&itr, tag_type, pmr_rsrc);
 
                     primitives.emplace(std::piecewise_construct,
                                        std::forward_as_tuple(reinterpret_cast<char *>(name_ptr), name_len),
-                                       std::forward_as_tuple(tag_type, reinterpret_cast<uint64_t>(array_ptr_start), static_cast<uint32_t>(array_len)));
+                                       std::forward_as_tuple(tag_type, reinterpret_cast<uint64_t>(array_ptr), static_cast<uint32_t>(array_len)));
 
 #if NBT_DEBUG == true
                     switch (tag_type)
@@ -419,16 +357,5 @@ namespace melon::nbt
         return itr;
     }
 
-    const compound *compound::extract_top_compound()
-    {
-        if (parent.has_value())
-        {
-            if (std::holds_alternative<compound *>(parent.value()))
-                return std::get<compound *>(parent.value())->top;
-            else
-                return std::get<list *>(parent.value())->top;
-        }
-        return this;
-    }
 #pragma clang diagnostic pop
 }

@@ -23,9 +23,11 @@
 #include <memory>
 #include <memory_resource>
 
+#include "util/util.h"
+
 namespace melon::nbt
 {
-#define NBT_DEBUG false
+#define NBT_DEBUG true
 
     class list;
 
@@ -132,72 +134,45 @@ namespace melon::nbt
     };
 #endif
 
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "Simplify"
-#pragma ide diagnostic ignored "UnreachableCode"
-
-    template<typename T>
-    requires std::integral<T>
-    T cvt_endian(T value)
+    uint64_t inline read_tag_primitive(std::byte **itr, tag_type_enum tag_type)
     {
-        if constexpr (std::endian::native == std::endian::little)
-            return std::byteswap(value);
-        else
-            return value;
+        uint64_t prim_value;
+
+        // C++14 guarantees the start address is the same across union members making a memcpy safe to do
+        // Always copy 8 bytes because it'll allow the memcpy to be inlined easily.
+        std::memcpy(reinterpret_cast<void *>(&prim_value), reinterpret_cast<const void *>(*itr), sizeof(prim_value));
+        prim_value = cvt_endian(prim_value);
+
+        // Pack the value to the left so when read from the union with the proper type it will be correct.
+        prim_value = pack_left(prim_value, tag_properties[tag_type].size);
+
+        *itr += tag_properties[tag_type].size;
+
+        return prim_value;
     }
 
-    uint64_t inline pack_left(uint64_t value, tag_type_enum type)
+    std::tuple<std::byte *, int32_t> inline read_tag_array(std::byte **itr, tag_type_enum tag_type, std::pmr::memory_resource *pmr_rsrc = std::pmr::get_default_resource())
     {
-        if constexpr (std::endian::native == std::endian::little)
-            return value >> ((sizeof(uint64_t) - tag_properties[type].size) << 3);
-        else
-            return value;
+        int32_t array_len;
+        std::memcpy(&array_len, *itr, sizeof(array_len));
+        array_len = cvt_endian(array_len);
+        *itr += sizeof(array_len);
+
+        // My take on a branchless conversion of an unaligned big endian array of an arbitrarily sized data type to an aligned little endian array.
+        auto *array_ptr = static_cast<std::byte *>(pmr_rsrc->allocate(array_len * tag_properties[tag_type].size + 8, tag_properties[tag_type].size) /* alignment */);
+        auto ret = std::make_tuple(array_ptr, array_len);
+
+        for (auto array_idx = 0; array_idx < array_len; array_idx++)
+        {
+            uint64_t prim_value = read_tag_primitive(itr, tag_type);
+            std::memcpy(array_ptr, reinterpret_cast<void *>(&prim_value), sizeof(prim_value));
+
+            array_ptr += tag_properties[tag_type].size;
+        }
+
+        return ret;
     }
 
-#pragma clang diagnostic pop
-
-    template<typename T>
-    using uint_size [[maybe_unused]] =
-            typename std::conditional<(sizeof(T) == 2), uint16_t,
-                    typename std::conditional<(sizeof(T) == 4), uint32_t,
-                            uint64_t
-                    >::type
-            >::type;
-
-    template<typename T>
-    void cvt_endian_array(int32_t len, T *src)
-    {
-        if constexpr (sizeof(T) >= 2)
-            for (int index = 0; index < len; index++)
-                src[index] = cvt_endian<T>(src[index]);
-    }
-
-    template<typename T>
-    void read_tag_array(int32_t len, void **dst, void *src)
-    {
-        *dst = (void *)malloc(len * sizeof(T));
-        std::memcpy((void *)*dst, src, len * sizeof(T));
-
-        if constexpr (sizeof(T) >= 2)
-            for (int index = 0; index < len; index++)
-                ((T *)(*dst))[index] = cvt_endian<T>(((T *)(*dst))[index]);
-    }
-
-    class debug_monotonic_buffer_resource : public std::pmr::monotonic_buffer_resource
-    {
-    public:
-        debug_monotonic_buffer_resource(void *buffer, std::size_t buffer_size);
-        ~debug_monotonic_buffer_resource() override;
-
-    protected:
-        void *do_allocate(std::size_t bytes, std::size_t alignment) override;
-        void do_deallocate(void *p, std::size_t bytes, std::size_t alignment) override;
-        [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource &other) const noexcept override;
-
-    private:
-        int64_t total_bytes_allocated   = 0;
-        int64_t total_bytes_deallocated = 0;
-    };
 }
 
 #endif //MELON_NBT_H
