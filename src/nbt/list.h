@@ -19,17 +19,11 @@ namespace melon::nbt
     class list
     {
     public:
-        std::string_view name;
+        std::pmr::string *name = nullptr;
         tag_type_enum    type  = tag_end;
         int32_t          count = 0;
 
         list() = delete;
-
-        explicit list(std::variant<compound *, list *> parent_in);
-
-        // I'd honestly prefer these to be private, but that'd require either a custom allocator or an intermediate class
-        // that would add temporary objects I'm trying to avoid
-        explicit list(std::byte **itr_in, std::variant<compound *, list *>, bool skip_header = false);
 
         list(const list &) = delete;
         list &operator=(const list &) = delete;
@@ -37,22 +31,36 @@ namespace melon::nbt
         list(list &&) noexcept;
         list &operator=(list &&) noexcept;
 
+#if NBT_DEBUG == true
         ~list();
+#else
+        ~list() = default;
+#endif
 
     private:
         friend class compound;
 
-        std::byte *read(std::byte *itr, bool skip_header = false);
+        explicit list(std::variant<compound *, list *> parent_in, std::string_view name_in);
+        explicit list(std::byte **itr_in, const std::byte *itr_end, std::variant<compound *, list *>, std::pmr::string *name_in, bool no_header = false);
+
+        template<typename T>
+        std::pmr::vector<T> *init_container()
+        {
+            void *ptr;
+
+            ptr = pmr_rsrc->allocate(sizeof(std::pmr::vector<T>));
+            return new(ptr) std::pmr::vector<T>(pmr_rsrc);
+        }
+
+        std::byte *read(std::byte *itr, const std::byte *itr_end, bool skip_header = false);
 
         std::variant<compound *, list *> parent;
         compound                         *top;
         std::pmr::memory_resource        *pmr_rsrc = std::pmr::get_default_resource();
 
-        std::pmr::vector<primitive_tag> primitives;
-        std::pmr::vector<list>          lists;
-        std::pmr::vector<compound>      compounds;
-
-        std::pmr::string *name_backing = nullptr;
+        std::pmr::vector<primitive_tag *> *primitives;
+        std::pmr::vector<list *>          *lists;
+        std::pmr::vector<compound *>      *compounds;
 
         uint16_t depth    = 0;
         uint64_t size     = 0;

@@ -5,7 +5,7 @@
 #ifndef LODE_UTIL_DEFLATE_H
 #define LODE_UTIL_DEFLATE_H
 
-#include <libdeflate.h>
+#include "libdeflate.h"
 
 namespace melon::util {
     void gzip_inflate(std::vector<std::byte> &out, const std::vector<char> &in, libdeflate_decompressor *d = nullptr);

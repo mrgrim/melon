@@ -18,9 +18,9 @@ requires std::integral<T>
 T cvt_endian(T value)
 {
     if constexpr (std::endian::native == std::endian::little)
-        return std::byteswap(value);
-    else
-        return value;
+        value = std::byteswap(value);
+
+    return value;
 }
 
 template<typename T>
@@ -28,9 +28,9 @@ requires std::integral<T>
 T inline pack_left(T value, uint16_t source_size)
 {
     if constexpr (std::endian::native == std::endian::little)
-        return value >> ((sizeof(T) - source_size) << 3);
-    else
-        return value;
+        value >>= ((sizeof(T) - source_size) << 3);
+
+    return value;
 }
 
 #pragma clang diagnostic pop

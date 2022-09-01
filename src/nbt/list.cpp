@@ -17,18 +17,21 @@
 
 namespace melon::nbt
 {
-    list::list(std::variant<compound *, list *> parent_in)
+    list::list(std::variant<compound *, list *> parent_in, std::string_view name_in)
             : parent(parent_in),
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
               pmr_rsrc(top->pmr_rsrc),
-              primitives(pmr_rsrc),
-              compounds(pmr_rsrc),
-              lists(pmr_rsrc)
+              compounds(init_container<compound *>()),
+              lists(init_container<list *>()),
+              primitives(init_container<primitive_tag *>())
     {
         std::visit([this](auto &&tag) {
             depth    = tag->depth + 1;
             max_size = tag->max_size;
         }, parent_in);
+
+        void *ptr = pmr_rsrc->allocate(sizeof(std::pmr::string));
+        name = new(ptr) std::pmr::string(name_in, pmr_rsrc);
     }
 
     list::list(list &&in) noexcept
@@ -41,14 +44,13 @@ namespace melon::nbt
               parent(in.parent),
               top(in.top),
               pmr_rsrc(in.pmr_rsrc),
-              name_backing(in.name_backing),
-              primitives(std::move(in.primitives)),
-              compounds(std::move(in.compounds)),
-              lists(std::move(in.lists))
+              primitives(in.primitives),
+              compounds(in.compounds),
+              lists(in.lists)
     {
         std::cerr << "!!! Moving list via ctor: " << name << "!" << std::endl;
 
-        in.name   = std::string_view();
+        in.name   = nullptr;
         in.parent = (list *)nullptr;
         in.top    = nullptr;
 
@@ -57,7 +59,6 @@ namespace melon::nbt
         in.count        = 0;
         in.depth        = 1;
         in.max_size     = -1;
-        in.name_backing = nullptr;
         in.pmr_rsrc     = std::pmr::get_default_resource();
     }
 
@@ -66,8 +67,6 @@ namespace melon::nbt
         if (this != &in)
         {
             std::cerr << "!!! Moving list via operator=: " << in.name << "!" << std::endl;
-
-            delete (name_backing);
 
             name   = in.name;
             parent = in.parent;
@@ -78,17 +77,16 @@ namespace melon::nbt
             count        = in.count;
             depth        = in.depth;
             max_size     = in.max_size;
-            name_backing = in.name_backing;
             pmr_rsrc     = in.pmr_rsrc;
 
-            primitives = std::move(in.primitives);
-            compounds  = std::move(in.compounds);
-            lists      = std::move(in.lists);
+            primitives = in.primitives;
+            compounds  = in.compounds;
+            lists      = in.lists;
 
             in.type  = tag_end;
             in.count = 0;
 
-            in.name   = std::string_view();
+            in.name   = nullptr;
             in.parent = (list *)nullptr;
             in.top    = nullptr;
 
@@ -97,31 +95,30 @@ namespace melon::nbt
             in.count        = 0;
             in.depth        = 1;
             in.max_size     = -1;
-            in.name_backing = nullptr;
             in.pmr_rsrc     = std::pmr::get_default_resource();
         }
 
         return *this;
     }
 
+#if NBT_DEBUG == true
     list::~list()
     {
-#if NBT_DEBUG == true
-        if (name.empty())
+        if (name->empty())
             std::cout << "Deleting anonymous list." << std::endl;
         else
             std::cout << "Deleting list with name " << name << std::endl;
-#endif
-        delete name_backing;
     }
+#endif
 
-    list::list(std::byte **itr_in, std::variant<compound *, list *> parent_in, bool skip_header)
+    list::list(std::byte **itr_in, const std::byte *itr_end, std::variant<compound *, list *> parent_in, std::pmr::string *name_in, bool no_header)
             : parent(parent_in),
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
+              name(name_in),
               pmr_rsrc(top->pmr_rsrc),
-              primitives(pmr_rsrc),
-              compounds(pmr_rsrc),
-              lists(pmr_rsrc)
+              compounds(init_container<compound *>()),
+              lists(init_container<list *>()),
+              primitives(init_container<primitive_tag *>())
     {
         if (depth > 512)
             throw std::runtime_error("NBT Depth exceeds 512.");
@@ -131,29 +128,30 @@ namespace melon::nbt
             max_size = tag->max_size;
         }, parent_in);
 
-        *itr_in = read(*itr_in, skip_header);
+        *itr_in = read(*itr_in, itr_end, no_header);
     }
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "misc-no-recursion"
 #pragma ide diagnostic ignored "LocalValueEscapesScope"
 
-    std::byte *list::read(std::byte *itr, bool skip_header)
+    std::byte *list::read(std::byte *itr, const std::byte *itr_end, bool skip_header)
     {
         static_assert(sizeof(count) == sizeof(int32_t));
         static_assert(sizeof(tag_type_enum) == sizeof(std::byte));
 
-        if (itr == nullptr) [[unlikely]] throw std::runtime_error("NBT List Read called with NULL iterator.");
-
+        void *ptr;
         auto itr_start = itr;
-
-        if (static_cast<tag_type_enum>(*itr) != tag_list) [[unlikely]] throw std::runtime_error("NBT Tag Type Not List.");
 
         uint16_t str_len;
         std::memcpy(&str_len, itr + 1, sizeof(str_len));
         str_len = cvt_endian(str_len);
 
-        name = std::string_view(reinterpret_cast<char *>(itr + 3), str_len & (static_cast<int16_t>(skip_header) - 1));
+        if (name == nullptr)
+        {
+            ptr = pmr_rsrc->allocate(sizeof(std::pmr::string));
+            name = new(ptr) std::pmr::string(reinterpret_cast<char *>(itr + 3), str_len & (static_cast<int16_t>(skip_header) - 1), pmr_rsrc);
+        }
 
         itr += (str_len + sizeof(str_len) + sizeof(tag_type_enum)) & (static_cast<int16_t>(skip_header) - 1);
 
@@ -165,7 +163,7 @@ namespace melon::nbt
         count = cvt_endian(count);
         itr += sizeof(count);
 
-        if (tag_properties[tag_type].category == cat_complex)
+        if (tag_properties[tag_type].category == cat_container)
         {
 #if NBT_DEBUG == true
             std::cout << "Found a list of " << tag_printable_names[tag_type] << std::endl;
@@ -173,14 +171,15 @@ namespace melon::nbt
 
             if (tag_type == tag_list)
             {
-                lists.reserve(count);
+                lists->reserve(count);
 
                 for (int32_t index = 0; index < count; index++)
                 {
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous list." << std::endl;
 #endif
-                    lists.emplace_back(&itr, this);
+                    ptr = pmr_rsrc->allocate(sizeof(list));
+                    lists->push_back(new(ptr) list(&itr, itr_end, this, nullptr, true));
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous list." << std::endl;
                     compound::lists_parsed++;
@@ -189,14 +188,15 @@ namespace melon::nbt
             }
             else if (tag_type == tag_compound)
             {
-                compounds.reserve(count);
+                compounds->reserve(count);
 
                 for (int32_t index = 0; index < count; index++)
                 {
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous compound." << std::endl;
 #endif
-                    compounds.emplace_back(&itr, this, true);
+                    ptr = pmr_rsrc->allocate(sizeof(compound));
+                    compounds->push_back(new(ptr) compound(&itr, itr_end, this, nullptr, true));
 #if NBT_DEBUG == true
                     std::cout << "Exiting anonymous compound." << std::endl;
                     compound::compounds_parsed++;
@@ -207,14 +207,15 @@ namespace melon::nbt
         else if (tag_properties[tag_type].category == cat_primitive)
         {
 #if NBT_DEBUG == true
-            std::cout << "Found a list of " << tag_printable_names[tag_type] << ": ";
+            std::cout << "Found a list of " << tag_printable_names[tag_type] << " (count: " << count << "): ";
 #endif
 
-            primitives.reserve(count);
+            primitives->reserve(count);
 
             for (int32_t index = 0; index < count; index++)
             {
-                const primitive_tag &result = primitives.emplace_back(tag_type, read_tag_primitive(&itr, tag_type));
+                ptr = pmr_rsrc->allocate(sizeof(primitive_tag));
+                primitives->push_back(new(ptr) primitive_tag(tag_type, read_tag_primitive(&itr, tag_type)));
 
 #if NBT_DEBUG == true
 #pragma clang diagnostic push
@@ -224,22 +225,22 @@ namespace melon::nbt
                 switch (tag_type)
                 {
                     case tag_byte:
-                        std::cout << +result.value.tag_byte << " ";
+                        std::cout << +primitives->back()->value.tag_byte << " ";
                         break;
                     case tag_short:
-                        std::cout << result.value.tag_short << " ";
+                        std::cout << primitives->back()->value.tag_short << " ";
                         break;
                     case tag_int:
-                        std::cout << result.value.tag_int << " ";
+                        std::cout << primitives->back()->value.tag_int << " ";
                         break;
                     case tag_long:
-                        std::cout << result.value.tag_long << " ";
+                        std::cout << primitives->back()->value.tag_long << " ";
                         break;
                     case tag_float:
-                        std::cout << result.value.tag_float << " ";
+                        std::cout << primitives->back()->value.tag_float << " ";
                         break;
                     case tag_double:
-                        std::cout << result.value.tag_double << " ";
+                        std::cout << primitives->back()->value.tag_double << " ";
                         break;
                 }
 #pragma clang diagnostic pop
@@ -252,7 +253,7 @@ namespace melon::nbt
         }
         else if (tag_properties[tag_type].category == cat_array)
         {
-            primitives.reserve(count);
+            primitives->reserve(count);
 
             if (tag_type == tag_string)
             {
@@ -268,49 +269,57 @@ namespace melon::nbt
                     str_len = cvt_endian(str_len);
                     itr += sizeof(str_len);
 
+                    ptr = pmr_rsrc->allocate(sizeof(primitive_tag));
+                    primitives->push_back(new(ptr) primitive_tag(tag_type, reinterpret_cast<uint64_t>(itr), nullptr, static_cast<uint32_t>(str_len)));
+                    itr += str_len;
+
 #if NBT_DEBUG == true
-                    std::cout << std::string_view(reinterpret_cast<char *>(itr), str_len) << std::endl;
+                    std::cout << std::string_view(primitives->back()->value.tag_string, primitives->back()->size) << std::endl;
                     compound::strings_parsed++;
 #endif
-
-                    primitives.emplace_back(tag_type, reinterpret_cast<uint64_t>(itr), static_cast<uint32_t>(str_len));
-                    itr += str_len;
                 }
             }
             else
             {
+
 #if NBT_DEBUG == true
-                std::cout << "Found a list of " << tag_printable_names[tag_type] << ": " << std::endl;
+                std::cout << "Found a list of " << tag_printable_names[tag_type] << " (count: " << count << "): " << std::endl;
 #endif
 
                 for (int32_t index = 0; index < count; index++)
                 {
                     auto [array_ptr, array_len] = read_tag_array(&itr, tag_type, pmr_rsrc);
 
-#if NBT_DEBUG == true
-                    const primitive_tag &result = primitives.emplace_back(tag_type, reinterpret_cast<uint64_t>(array_ptr), static_cast<uint32_t>(array_len));
-                    compound::arrays_parsed++;
-#else
-                    primitives.emplace_back(tag_type, reinterpret_cast<uint64_t>(array_ptr), static_cast<uint32_t>(array_len));
-#endif
+                    ptr = pmr_rsrc->allocate(sizeof(primitive_tag));
+                    primitives->push_back(new(ptr) primitive_tag(tag_type, reinterpret_cast<uint64_t>(array_ptr), nullptr, static_cast<uint32_t>(array_len)));
 
 #if NBT_DEBUG == true
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wswitch"
+                    compound::arrays_parsed++;
                     switch (tag_type)
                     {
+                        case tag_string:
+                            std::cout << std::string_view(primitives->back()->value.tag_string, primitives->back()->size) << std::endl;
+                            compound::strings_parsed++;
+                            break;
                         case tag_byte_array:
-                            for (int array_idx = 0; array_idx < array_len; array_idx++)
-                                std::cout << +result.value.tag_byte_array[array_idx] << " ";
+                            for (int array_idx = 0; array_idx < primitives->back()->size; array_idx++)
+                                std::cout << +primitives->back()->value.tag_byte_array[array_idx] << " ";
                             std::cout << std::endl;
+                            compound::arrays_parsed++;
                             break;
                         case tag_int_array:
-                            for (int array_idx = 0; array_idx < array_len; array_idx++)
-                                std::cout << +result.value.tag_int_array[array_idx] << " ";
+                            for (int array_idx = 0; array_idx < primitives->back()->size; array_idx++)
+                                std::cout << +primitives->back()->value.tag_int_array[array_idx] << " ";
+                            std::cout << std::endl;
+                            compound::arrays_parsed++;
                             break;
                         case tag_long_array:
-                            for (int array_idx = 0; array_idx < array_len; array_idx++)
-                                std::cout << +result.value.tag_long_array[array_idx] << " ";
+                            for (int array_idx = 0; array_idx < primitives->back()->size; array_idx++)
+                                std::cout << +primitives->back()->value.tag_long_array[array_idx] << " ";
+                            std::cout << std::endl;
+                            compound::arrays_parsed++;
                             break;
                     }
 #pragma clang diagnostic pop

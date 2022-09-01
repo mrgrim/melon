@@ -20,22 +20,38 @@ namespace melon::nbt
 
     class compound
     {
-    private:
-        // We put this up here so it's the last thing to be destructed. This backs all the string_view's in the entire structure.
-        std::unique_ptr<std::vector<std::byte>> raw = nullptr;
-
     public:
-        std::string_view name;
+        std::pmr::string *name = nullptr;
 
         compound() = delete;
 
-        explicit compound(std::optional<std::variant<compound *, list *>> parent_in = std::nullopt, int64_t max_size_in = -1,
-                          std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
+        // For building a compound from scratch
+        explicit compound(std::string_view name_in = "", int64_t max_size_in = -1, std::pmr::memory_resource *upstream_pmr_rsrc = std::pmr::get_default_resource());
+
+        // For parsing a binary NBT buffer
         explicit compound(std::unique_ptr<std::vector<std::byte>> raw_in, std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
 
-        // I'd honestly prefer these to be private, but that'd require either a custom allocator or an intermediate class
-        // that would add temporary objects I'm trying to avoid
-        explicit compound(std::byte **itr_in, std::variant<compound *, list *>, bool skip_header = false);
+        template<tag_type_enum tag_idx, class V> requires(is_nbt_primitive<tag_idx> && std::same_as<V, tag_prim_t<tag_idx>>)
+        void put(std::string_view tag_name, V value)
+        {
+            auto itr = primitives->find(tag_name);
+            uint64_t generic_value = pack_left(*((uint64_t *)(&value)), sizeof(tag_prim_t<tag_idx>));
+
+            if (itr == primitives->end())
+            {
+                auto *str_ptr = reinterpret_cast<std::pmr::string *>(pmr_rsrc->allocate(sizeof(std::pmr::string)));
+                auto *tag_ptr = reinterpret_cast<primitive_tag *>(pmr_rsrc->allocate(sizeof(primitive_tag)));
+
+                str_ptr = new(str_ptr) std::pmr::string(tag_name, pmr_rsrc);
+                tag_ptr = new(tag_ptr) primitive_tag(tag_idx, generic_value, str_ptr);
+
+                (*primitives)[*str_ptr] = tag_ptr;
+            }
+            else
+            {
+                itr->second->value.generic = generic_value;
+            }
+        }
 
         compound(const compound &) = delete;
         compound &operator=(const compound &) = delete;
@@ -43,32 +59,43 @@ namespace melon::nbt
         compound(compound &&) noexcept;
         compound &operator=(compound &&) noexcept;
 
+#if NBT_DEBUG == true
         ~compound();
 
-#if NBT_DEBUG == true
         inline static uint32_t compounds_parsed;
         inline static uint32_t lists_parsed;
         inline static uint32_t primitives_parsed;
         inline static uint32_t strings_parsed;
         inline static uint32_t arrays_parsed;
+#else
+        ~compound() = default;
 #endif
     private:
         friend class list;
 
-        std::byte *read(std::byte *itr, bool skip_header = false);
+        explicit compound(std::byte **itr_in, const std::byte *itr_end, std::variant<compound *, list *> parent_in, std::pmr::string *name_in = nullptr, bool no_header = false);
 
-        std::optional<std::variant<compound *, list *>> parent    = std::nullopt;
+        template<typename T>
+        std::pmr::unordered_map<std::string_view, T> *init_container()
+        {
+            void *ptr;
+
+            ptr = pmr_rsrc->allocate(sizeof(std::pmr::unordered_map<std::string_view, T>));
+            return new(ptr) std::pmr::unordered_map<std::string_view, T>(pmr_rsrc);
+        }
+
+        std::byte *read(std::byte *itr, const std::byte *itr_end, bool skip_header = false);
+
+        std::optional<std::variant<compound *, list *>> parent;
         compound                                        *top;
-        std::pmr::memory_resource                       *pmr_rsrc = std::pmr::get_default_resource();
+        std::pmr::memory_resource                       *pmr_rsrc;
 
-        std::pmr::unordered_map<std::string_view, primitive_tag> primitives;
-        std::pmr::unordered_map<std::string_view, compound>      compounds;
-        std::pmr::unordered_map<std::string_view, list>          lists;
-
-        std::pmr::string *name_backing = nullptr;
+        std::pmr::unordered_map<std::string_view, primitive_tag *> *primitives;
+        std::pmr::unordered_map<std::string_view, compound *>      *compounds;
+        std::pmr::unordered_map<std::string_view, list *>          *lists;
 
         uint16_t depth    = 0;
-        uint64_t size     = 0;
+        size_t   size     = 0;
         int64_t  max_size = -1;
     };
 }
