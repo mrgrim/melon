@@ -41,7 +41,7 @@ namespace melon::nbt
         friend class compound;
 
         explicit list(std::variant<compound *, list *> parent_in, std::string_view name_in);
-        explicit list(std::byte **itr_in, const std::byte *itr_end, std::variant<compound *, list *>, std::pmr::string *name_in, bool no_header = false);
+        explicit list(char **itr_in, const char *itr_end, std::variant<compound *, list *>, std::pmr::string *name_in, bool no_header = false);
 
         template<typename T>
         std::pmr::vector<T> *init_container()
@@ -52,7 +52,7 @@ namespace melon::nbt
             return new(ptr) std::pmr::vector<T>(pmr_rsrc);
         }
 
-        std::byte *read(std::byte *itr, const std::byte *itr_end, bool skip_header = false);
+        char *read(char *itr, const char *itr_end, bool skip_header = false);
 
         std::variant<compound *, list *> parent;
         compound                         *top;

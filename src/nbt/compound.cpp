@@ -22,28 +22,28 @@ namespace melon::nbt
     compound::compound(std::string_view name_in, int64_t max_size_in, std::pmr::memory_resource *upstream_pmr_rsrc)
             : parent(std::nullopt),
               top(this),
-              depth(1),
-              max_size(max_size_in),
               pmr_rsrc(new std::pmr::monotonic_buffer_resource(4096, upstream_pmr_rsrc)),
+              primitives(init_container<primitive_tag *>()),
               compounds(init_container<compound *>()),
               lists(init_container<list *>()),
-              primitives(init_container<primitive_tag *>())
+              depth(1),
+              max_size(max_size_in)
     {
         void *ptr = pmr_rsrc->allocate(sizeof(std::pmr::string));
         name = new(ptr) std::pmr::string(name_in, pmr_rsrc);
     }
 
     compound::compound(compound &&in) noexcept
-            : size(in.size),
-              name(in.name),
-              depth(in.depth),
-              max_size(in.max_size),
+            : name(in.name),
               parent(in.parent),
               top(in.top),
               pmr_rsrc(in.pmr_rsrc),
               primitives(in.primitives),
               compounds(in.compounds),
-              lists(in.lists)
+              lists(in.lists),
+              depth(in.depth),
+              size(in.size),
+              max_size(in.max_size)
     {
         std::cerr << "!!! Moving compound via ctor: " << name << "!" << std::endl;
 
@@ -117,14 +117,14 @@ namespace melon::nbt
     }
 #endif
 
-    compound::compound(std::unique_ptr<std::vector<std::byte>> raw, std::pmr::memory_resource *pmr_rsrc_in)
-            : depth(1),
-              max_size(-1),
-              top(this),
+    compound::compound(std::unique_ptr<std::vector<char>> raw, std::pmr::memory_resource *pmr_rsrc_in)
+            : top(this),
               pmr_rsrc(pmr_rsrc_in),
+              primitives(init_container<primitive_tag *>()),
               compounds(init_container<compound *>()),
               lists(init_container<list *>()),
-              primitives(init_container<primitive_tag *>())
+              depth(1),
+              max_size(-1)
     {
         if (raw->size() < 5) throw std::runtime_error("NBT Compound Tag Too Small.");
         if (static_cast<tag_type_enum>(*raw->data()) != tag_compound) [[unlikely]] throw std::runtime_error("NBT Tag Type Not Compound.");
@@ -147,14 +147,14 @@ namespace melon::nbt
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "misc-no-recursion"
 
-    compound::compound(std::byte **itr_in, const std::byte *itr_end, std::variant<compound *, list *> parent_in, std::pmr::string *name_in, bool no_header)
-            : parent(parent_in),
+    compound::compound(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, std::pmr::string *name_in, bool no_header)
+            : name(name_in),
+              parent(parent_in),
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
-              name(name_in),
               pmr_rsrc(top->pmr_rsrc),
+              primitives(init_container<primitive_tag *>()),
               compounds(init_container<compound *>()),
-              lists(init_container<list *>()),
-              primitives(init_container<primitive_tag *>())
+              lists(init_container<list *>())
     {
         if (depth > 512) throw std::runtime_error("NBT Depth exceeds 512.");
 
@@ -166,7 +166,7 @@ namespace melon::nbt
         *itr_in = read(*itr_in, itr_end, no_header);
     }
 
-    std::byte *compound::read(std::byte *itr, const std::byte *itr_end, bool skip_header)
+    char *compound::read(char *itr, const char *itr_end, bool skip_header)
     {
         static_assert(sizeof(tag_type_enum) == sizeof(std::byte));
 
@@ -179,8 +179,8 @@ namespace melon::nbt
 
         if (name == nullptr)
         {
-            ptr = pmr_rsrc->allocate(sizeof(std::pmr::string));
-            name = new(ptr) std::pmr::string(reinterpret_cast<char *>(itr + 3), name_len & (static_cast<int16_t>(skip_header) - 1), pmr_rsrc);
+            ptr = pmr_rsrc->allocate(sizeof(std::pmr::string), alignof(std::pmr::string));
+            name = new(ptr) std::pmr::string(itr + 3, name_len & (static_cast<int16_t>(skip_header) - 1), pmr_rsrc);
         }
 
         itr += (name_len + sizeof(name_len) + sizeof(tag_type_enum)) & (static_cast<int16_t>(skip_header) - 1);
@@ -193,8 +193,8 @@ namespace melon::nbt
             std::memcpy(&name_len, itr, sizeof(name_len));
             name_len = cvt_endian(name_len);
 
-            ptr            = pmr_rsrc->allocate(sizeof(std::pmr::string));
-            auto *tag_name = new(ptr) std::pmr::string(reinterpret_cast<char *>(itr + sizeof(name_len)), name_len, pmr_rsrc);
+            ptr            = pmr_rsrc->allocate(sizeof(std::pmr::string), alignof(std::pmr::string));
+            auto *tag_name = new(ptr) std::pmr::string(itr + sizeof(name_len), name_len, pmr_rsrc);
 
             itr += sizeof(name_len) + name_len;
 
@@ -208,7 +208,7 @@ namespace melon::nbt
                     std::cout << "Found List " << *tag_name << std::endl;
                     compound::lists_parsed++;
 #endif
-                    ptr = pmr_rsrc->allocate(sizeof(list));
+                    ptr = pmr_rsrc->allocate(sizeof(list), alignof(list));
                     (*lists)[*tag_name] = new(ptr) list(&itr, itr_end, this, tag_name);
                 }
                 else if (tag_type == tag_compound)
@@ -217,13 +217,13 @@ namespace melon::nbt
                     std::cout << "Found Compound " << *tag_name << std::endl;
                     compound::compounds_parsed++;
 #endif
-                    ptr = pmr_rsrc->allocate(sizeof(compound));
+                    ptr = pmr_rsrc->allocate(sizeof(compound), alignof(compound));
                     (*compounds)[*tag_name] = new(ptr) compound(&itr, itr_end, this, tag_name);
                 }
             }
             else if (tag_properties[tag_type].category == cat_primitive)
             {
-                ptr = pmr_rsrc->allocate(sizeof(primitive_tag));
+                ptr = pmr_rsrc->allocate(sizeof(primitive_tag), alignof(primitive_tag));
                 (*primitives)[*tag_name] = new(ptr) primitive_tag(tag_type, read_tag_primitive(&itr, tag_type), tag_name);
 
 #if NBT_DEBUG == true
@@ -258,20 +258,23 @@ namespace melon::nbt
             }
             else if (tag_properties[tag_type].category == cat_array)
             {
-                ptr = pmr_rsrc->allocate(sizeof(primitive_tag));
+                ptr = pmr_rsrc->allocate(sizeof(primitive_tag), alignof(primitive_tag));
 
                 if (tag_type == tag_string)
                 {
                     // Reminder: NBT strings are "Modified UTF-8" and not null terminated.
                     // https://en.wikipedia.org/wiki/UTF-8#Modified_UTF-8
                     uint16_t str_len;
+
                     std::memcpy(&str_len, itr, sizeof(str_len));
                     str_len = cvt_endian(str_len);
-                    itr += sizeof(str_len);
 
-                    (*primitives)[*tag_name] = new(ptr) primitive_tag(tag_type, reinterpret_cast<uint64_t>(itr), tag_name, static_cast<uint32_t>(str_len));
+                    void *str_ptr = pmr_rsrc->allocate(str_len, alignof(char *));
+                    std::memcpy(str_ptr, itr+ sizeof(str_len), str_len);
 
-                    itr += str_len;
+                    (*primitives)[*tag_name] = new(ptr) primitive_tag(tag_type, std::bit_cast<uint64_t>(str_ptr), tag_name, static_cast<uint32_t>(str_len));
+
+                    itr += sizeof(str_len) + str_len;
 
 #if NBT_DEBUG == true
                     std::cout << "Read string " << *(*primitives)[*tag_name]->name
@@ -284,7 +287,7 @@ namespace melon::nbt
 
                     auto [array_ptr, array_len] = read_tag_array(&itr, tag_type, pmr_rsrc);
 
-                    (*primitives)[*tag_name] = new(ptr) primitive_tag(tag_type, reinterpret_cast<uint64_t>(array_ptr), tag_name, static_cast<uint32_t>(array_len));
+                    (*primitives)[*tag_name] = new(ptr) primitive_tag(tag_type, std::bit_cast<uint64_t>(array_ptr), tag_name, static_cast<uint32_t>(array_len));
 
 #if NBT_DEBUG == true
                     switch (tag_type)

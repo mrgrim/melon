@@ -30,7 +30,7 @@ int main() {
 
     start = std::chrono::high_resolution_clock::now();
 
-    std::vector<std::byte> nbt_data;
+    std::vector<char> nbt_data;
     util::gzip_inflate(nbt_data, gz_buffer);
 
     end = std::chrono::high_resolution_clock::now();
@@ -67,7 +67,7 @@ int main() {
         start = std::chrono::high_resolution_clock::now();
 
 #if NBT_DEBUG == true
-        parsed_nbt = new nbt::compound(std::move(std::make_unique<std::vector<std::byte>>(nbt_data)), pmr_rsrc);
+        parsed_nbt = new nbt::compound(std::move(std::make_unique<std::vector<char>>(nbt_data)), pmr_rsrc);
 #else
         for (int index = 0; index < 50000; index++)
             parsed_nbt.emplace_back(std::move(nbt_data_copies[index]), pmr_rsrc);

@@ -21,32 +21,32 @@ namespace melon::nbt
             : parent(parent_in),
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
               pmr_rsrc(top->pmr_rsrc),
-              compounds(init_container<compound *>()),
+              primitives(init_container<primitive_tag *>()),
               lists(init_container<list *>()),
-              primitives(init_container<primitive_tag *>())
+              compounds(init_container<compound *>())
     {
         std::visit([this](auto &&tag) {
             depth    = tag->depth + 1;
             max_size = tag->max_size;
         }, parent_in);
 
-        void *ptr = pmr_rsrc->allocate(sizeof(std::pmr::string));
+        void *ptr = pmr_rsrc->allocate(sizeof(std::pmr::string), alignof(std::pmr::string));
         name = new(ptr) std::pmr::string(name_in, pmr_rsrc);
     }
 
     list::list(list &&in) noexcept
-            : type(in.type),
-              size(in.size),
+            : name(in.name),
+              type(in.type),
               count(in.count),
-              name(in.name),
-              depth(in.depth),
-              max_size(in.max_size),
               parent(in.parent),
               top(in.top),
               pmr_rsrc(in.pmr_rsrc),
               primitives(in.primitives),
+              lists(in.lists),
               compounds(in.compounds),
-              lists(in.lists)
+              depth(in.depth),
+              size(in.size),
+              max_size(in.max_size)
     {
         std::cerr << "!!! Moving list via ctor: " << name << "!" << std::endl;
 
@@ -111,14 +111,14 @@ namespace melon::nbt
     }
 #endif
 
-    list::list(std::byte **itr_in, const std::byte *itr_end, std::variant<compound *, list *> parent_in, std::pmr::string *name_in, bool no_header)
-            : parent(parent_in),
+    list::list(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, std::pmr::string *name_in, bool no_header)
+            : name(name_in),
+              parent(parent_in),
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
-              name(name_in),
               pmr_rsrc(top->pmr_rsrc),
-              compounds(init_container<compound *>()),
+              primitives(init_container<primitive_tag *>()),
               lists(init_container<list *>()),
-              primitives(init_container<primitive_tag *>())
+              compounds(init_container<compound *>())
     {
         if (depth > 512)
             throw std::runtime_error("NBT Depth exceeds 512.");
@@ -135,22 +135,22 @@ namespace melon::nbt
 #pragma ide diagnostic ignored "misc-no-recursion"
 #pragma ide diagnostic ignored "LocalValueEscapesScope"
 
-    std::byte *list::read(std::byte *itr, const std::byte *itr_end, bool skip_header)
+    char *list::read(char *itr, const char *itr_end, bool skip_header)
     {
         static_assert(sizeof(count) == sizeof(int32_t));
-        static_assert(sizeof(tag_type_enum) == sizeof(std::byte));
+        static_assert(sizeof(tag_type_enum) == sizeof(char));
 
         void *ptr;
         auto itr_start = itr;
 
         uint16_t str_len;
-        std::memcpy(&str_len, itr + 1, sizeof(str_len));
+        std::memcpy(static_cast<void *>(&str_len), static_cast<const void *>(itr + 1), sizeof(str_len));
         str_len = cvt_endian(str_len);
 
         if (name == nullptr)
         {
-            ptr = pmr_rsrc->allocate(sizeof(std::pmr::string));
-            name = new(ptr) std::pmr::string(reinterpret_cast<char *>(itr + 3), str_len & (static_cast<int16_t>(skip_header) - 1), pmr_rsrc);
+            ptr = pmr_rsrc->allocate(sizeof(std::pmr::string), alignof(std::pmr::string));
+            name = new(ptr) std::pmr::string(itr + 3, str_len & (static_cast<int16_t>(skip_header) - 1), pmr_rsrc);
         }
 
         itr += (str_len + sizeof(str_len) + sizeof(tag_type_enum)) & (static_cast<int16_t>(skip_header) - 1);
@@ -159,7 +159,7 @@ namespace melon::nbt
         if (tag_type >= tag_properties.size()) [[unlikely]] throw std::runtime_error("Invalid NBT Tag Type.");
         type = tag_type;
 
-        std::memcpy(&count, itr, sizeof(count));
+        std::memcpy(static_cast<void *>(&count), static_cast<const void *>(itr), sizeof(count));
         count = cvt_endian(count);
         itr += sizeof(count);
 
@@ -178,7 +178,7 @@ namespace melon::nbt
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous list." << std::endl;
 #endif
-                    ptr = pmr_rsrc->allocate(sizeof(list));
+                    ptr = pmr_rsrc->allocate(sizeof(list), alignof(list));
                     lists->push_back(new(ptr) list(&itr, itr_end, this, nullptr, true));
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous list." << std::endl;
@@ -195,7 +195,7 @@ namespace melon::nbt
 #if NBT_DEBUG == true
                     std::cout << "Entering anonymous compound." << std::endl;
 #endif
-                    ptr = pmr_rsrc->allocate(sizeof(compound));
+                    ptr = pmr_rsrc->allocate(sizeof(compound), alignof(compound));
                     compounds->push_back(new(ptr) compound(&itr, itr_end, this, nullptr, true));
 #if NBT_DEBUG == true
                     std::cout << "Exiting anonymous compound." << std::endl;
@@ -214,7 +214,7 @@ namespace melon::nbt
 
             for (int32_t index = 0; index < count; index++)
             {
-                ptr = pmr_rsrc->allocate(sizeof(primitive_tag));
+                ptr = pmr_rsrc->allocate(sizeof(primitive_tag), alignof(primitive_tag));
                 primitives->push_back(new(ptr) primitive_tag(tag_type, read_tag_primitive(&itr, tag_type)));
 
 #if NBT_DEBUG == true
@@ -267,11 +267,14 @@ namespace melon::nbt
                     // https://en.wikipedia.org/wiki/UTF-8#Modified_UTF-8
                     std::memcpy(&str_len, itr, sizeof(str_len));
                     str_len = cvt_endian(str_len);
-                    itr += sizeof(str_len);
 
-                    ptr = pmr_rsrc->allocate(sizeof(primitive_tag));
-                    primitives->push_back(new(ptr) primitive_tag(tag_type, reinterpret_cast<uint64_t>(itr), nullptr, static_cast<uint32_t>(str_len)));
-                    itr += str_len;
+                    void *str_ptr = pmr_rsrc->allocate(str_len, alignof(char *));
+                    std::memcpy(str_ptr, static_cast<const void *>(itr + sizeof(str_len)), str_len);
+
+                    ptr = pmr_rsrc->allocate(sizeof(primitive_tag), alignof(primitive_tag));
+                    primitives->push_back(new(ptr) primitive_tag(tag_type, std::bit_cast<uint64_t>(str_ptr), nullptr, static_cast<uint32_t>(str_len)));
+
+                    itr += sizeof(str_len) + str_len;
 
 #if NBT_DEBUG == true
                     std::cout << std::string_view(primitives->back()->value.tag_string, primitives->back()->size) << std::endl;
@@ -290,8 +293,8 @@ namespace melon::nbt
                 {
                     auto [array_ptr, array_len] = read_tag_array(&itr, tag_type, pmr_rsrc);
 
-                    ptr = pmr_rsrc->allocate(sizeof(primitive_tag));
-                    primitives->push_back(new(ptr) primitive_tag(tag_type, reinterpret_cast<uint64_t>(array_ptr), nullptr, static_cast<uint32_t>(array_len)));
+                    ptr = pmr_rsrc->allocate(sizeof(primitive_tag), alignof(primitive_tag));
+                    primitives->push_back(new(ptr) primitive_tag(tag_type, std::bit_cast<uint64_t>(array_ptr), nullptr, static_cast<uint32_t>(array_len)));
 
 #if NBT_DEBUG == true
 #pragma clang diagnostic push

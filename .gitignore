@@ -1,6 +1,2 @@
-cmake-build-debug
-cmake-build-release
+cmake-build*
 .idea
-cmake-build-release-coverage
-cmake-build-debug-wsl
-cmake-build-release-wsl

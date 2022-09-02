@@ -1,0 +1,3 @@
+[submodule "extern/libdeflate/libdeflate"]
+	path = extern/libdeflate/libdeflate
+	url = git@github.com:ebiggers/libdeflate.git

@@ -16,7 +16,7 @@ namespace melon::util
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "Simplify"
 
-    void gzip_inflate(std::vector<std::byte> &out, const std::vector<char> &in, libdeflate_decompressor *d)
+    void gzip_inflate(std::vector<char> &out, const std::vector<char> &in, libdeflate_decompressor *d)
     {
         if (d == nullptr)
             d = libdeflate_alloc_decompressor();
@@ -29,7 +29,7 @@ namespace melon::util
         // This can be misleading if the stream has multiple "members" or if the field overflows (>4GiB)
         // We're not handling either case for now
         uint32_t isize;
-        std::memcpy(reinterpret_cast<void *>(&isize), reinterpret_cast<const void *>(&in[in.size() - 4]), sizeof(isize));
+        std::memcpy(static_cast<void *>(&isize), static_cast<const void *>(&in[in.size() - 4]), sizeof(isize));
 
         if (isize == 0) isize               = 1;
         if (isize > in.size() * 1023) isize = in.size() * 1023; // This is the largest DEFLATE can expand to
@@ -37,8 +37,8 @@ namespace melon::util
         out.resize(isize + 8); // lil' extra buffer for post-processing
         size_t actual_size;
 
-        switch (libdeflate_gzip_decompress(d, reinterpret_cast<const void *>(in.data()), in.size(),
-                                           reinterpret_cast<void *>(out.data()), out.capacity(), &actual_size))
+        switch (libdeflate_gzip_decompress(d, static_cast<const void *>(in.data()), in.size(),
+                                           static_cast<void *>(out.data()), out.capacity(), &actual_size))
         {
             case LIBDEFLATE_SHORT_OUTPUT:
             case LIBDEFLATE_SUCCESS:
@@ -59,7 +59,7 @@ namespace melon::util
 
     // out.capacity() after this call is likely to be significantly larger than out.size(). It's up to the caller
     // if they wish to perform a out.shrink_to_fit() call after.
-    void gzip_deflate(std::vector<char> &out, std::vector<std::byte> &in, libdeflate_compressor *c = nullptr, int level = 6)
+    void gzip_deflate(std::vector<char> &out, const std::vector<char> &in, libdeflate_compressor *c, int level)
     {
         if (c == nullptr)
             c = libdeflate_alloc_compressor(level);
@@ -71,7 +71,7 @@ namespace melon::util
         out.reserve(libdeflate_gzip_compress_bound(c, in.size()));
         out.push_back(0); // std::vector has been seen in the wild being lazy about allocating memory, force the issue
 
-        auto out_size = libdeflate_gzip_compress(c, reinterpret_cast<const void *>(in.data()), in.size(), reinterpret_cast<void *>(out.data()), out.size());
+        auto out_size = libdeflate_gzip_compress(c, static_cast<const void *>(in.data()), in.size(), static_cast<void *>(out.data()), out.size());
 
         if (out_size == 0)
             [[unlikely]]

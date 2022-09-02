@@ -153,13 +153,13 @@ namespace melon::nbt
         } value;
     };
 
-    uint64_t inline __attribute__((always_inline)) read_tag_primitive(std::byte **itr, tag_type_enum tag_type)
+    uint64_t inline __attribute__((always_inline)) read_tag_primitive(char **itr, tag_type_enum tag_type)
     {
         uint64_t prim_value;
 
         // C++14 guarantees the start address is the same across union members making a memcpy safe to do
         // Always copy 8 bytes because it'll allow the memcpy to be inlined easily.
-        std::memcpy(reinterpret_cast<void *>(&prim_value), reinterpret_cast<const void *>(*itr), sizeof(prim_value));
+        std::memcpy(static_cast<void *>(&prim_value), static_cast<const void *>(*itr), sizeof(prim_value));
         prim_value = cvt_endian(prim_value);
 
         // Pack the value to the left so when read from the union with the proper type it will be correct.
@@ -170,22 +170,22 @@ namespace melon::nbt
         return prim_value;
     }
 
-    std::tuple<std::byte *, int32_t> inline __attribute__((always_inline))
-    read_tag_array(std::byte **itr, tag_type_enum tag_type, std::pmr::memory_resource *pmr_rsrc = std::pmr::get_default_resource())
+    std::tuple<char *, int32_t> inline __attribute__((always_inline))
+    read_tag_array(char **itr, tag_type_enum tag_type, std::pmr::memory_resource *pmr_rsrc = std::pmr::get_default_resource())
     {
         int32_t array_len;
-        std::memcpy(&array_len, *itr, sizeof(array_len));
+        std::memcpy(static_cast<void *>(&array_len), static_cast<const void *>(*itr), sizeof(array_len));
         array_len = cvt_endian(array_len);
         *itr += sizeof(array_len);
 
         // My take on a branchless conversion of an unaligned big endian array of an arbitrarily sized data type to an aligned little endian array.
-        auto *array_ptr = static_cast<std::byte *>(pmr_rsrc->allocate(array_len * tag_properties[tag_type].size + 8, tag_properties[tag_type].size) /* alignment */);
+        auto *array_ptr = static_cast<char *>(pmr_rsrc->allocate(array_len * tag_properties[tag_type].size + 8, tag_properties[tag_type].size) /* alignment */);
         auto ret        = std::make_tuple(array_ptr, array_len);
 
         for (auto array_idx = 0; array_idx < array_len; array_idx++)
         {
             uint64_t prim_value = read_tag_primitive(itr, tag_type);
-            std::memcpy(array_ptr, reinterpret_cast<void *>(&prim_value), sizeof(prim_value));
+            std::memcpy(static_cast<void *>(array_ptr), static_cast<const void *>(&prim_value), sizeof(prim_value));
 
             array_ptr += tag_properties[tag_type].size;
         }

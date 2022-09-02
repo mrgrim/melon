@@ -29,7 +29,7 @@ namespace melon::nbt
         explicit compound(std::string_view name_in = "", int64_t max_size_in = -1, std::pmr::memory_resource *upstream_pmr_rsrc = std::pmr::get_default_resource());
 
         // For parsing a binary NBT buffer
-        explicit compound(std::unique_ptr<std::vector<std::byte>> raw_in, std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
+        explicit compound(std::unique_ptr<std::vector<char>> raw_in, std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
 
         template<tag_type_enum tag_idx, class V> requires(is_nbt_primitive<tag_idx> && std::same_as<V, tag_prim_t<tag_idx>>)
         void put(std::string_view tag_name, V value)
@@ -73,7 +73,7 @@ namespace melon::nbt
     private:
         friend class list;
 
-        explicit compound(std::byte **itr_in, const std::byte *itr_end, std::variant<compound *, list *> parent_in, std::pmr::string *name_in = nullptr, bool no_header = false);
+        explicit compound(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, std::pmr::string *name_in = nullptr, bool no_header = false);
 
         template<typename T>
         std::pmr::unordered_map<std::string_view, T> *init_container()
@@ -84,7 +84,7 @@ namespace melon::nbt
             return new(ptr) std::pmr::unordered_map<std::string_view, T>(pmr_rsrc);
         }
 
-        std::byte *read(std::byte *itr, const std::byte *itr_end, bool skip_header = false);
+        char *read(char *itr, const char *itr_end, bool skip_header = false);
 
         std::optional<std::variant<compound *, list *>> parent;
         compound                                        *top;
