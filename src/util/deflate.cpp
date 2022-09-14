@@ -3,9 +3,11 @@
 //
 
 #include <vector>
-#include <bit>
+#include <memory>
 #include <iostream>
 #include <cstring>
+#include <span>
+#include <utility>
 
 #include "deflate.h"
 #include "util.h"
@@ -13,10 +15,7 @@
 namespace melon::util
 {
 
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "Simplify"
-
-    void gzip_inflate(std::vector<char> &out, const std::vector<char> &in, libdeflate_decompressor *d)
+    std::pair<std::unique_ptr<char[]>, size_t> gzip_inflate(const std::vector<char> &in, libdeflate_decompressor *d)
     {
         if (d == nullptr)
             d = libdeflate_alloc_decompressor();
@@ -30,20 +29,21 @@ namespace melon::util
         // We're not handling either case for now
         uint32_t isize;
         std::memcpy(static_cast<void *>(&isize), static_cast<const void *>(&in[in.size() - 4]), sizeof(isize));
+        isize = cvt_endian<std::endian::little>(isize);
 
         if (isize == 0) isize               = 1;
         if (isize > in.size() * 1023) isize = in.size() * 1023; // This is the largest DEFLATE can expand to
 
-        out.resize(isize + 8); // lil' extra buffer for post-processing
+        auto out_buf = std::make_unique<char[]>(isize + 8);
         size_t actual_size;
 
         switch (libdeflate_gzip_decompress(d, static_cast<const void *>(in.data()), in.size(),
-                                           static_cast<void *>(out.data()), out.capacity(), &actual_size))
+                                           static_cast<void *>(out_buf.get()), isize, &actual_size))
         {
             case LIBDEFLATE_SHORT_OUTPUT:
             case LIBDEFLATE_SUCCESS:
                 libdeflate_free_decompressor(d);
-                return;
+                return {std::move(out_buf), isize + 8};
 
             case LIBDEFLATE_BAD_DATA:
                 libdeflate_free_decompressor(d);
@@ -52,10 +52,11 @@ namespace melon::util
             case LIBDEFLATE_INSUFFICIENT_SPACE:
                 libdeflate_free_decompressor(d);
                 throw std::runtime_error("Insufficient buffer space for decompression of gzip buffer.");
+
+            default:
+                std::unreachable();
         }
     }
-
-#pragma clang diagnostic pop
 
     // out.capacity() after this call is likely to be significantly larger than out.size(). It's up to the caller
     // if they wish to perform a out.shrink_to_fit() call after.

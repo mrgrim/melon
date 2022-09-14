@@ -9,30 +9,32 @@
 #include <concepts>
 #include <bit>
 
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "Simplify"
-#pragma ide diagnostic ignored "UnreachableCode"
-
-template<typename T>
+template<auto src_endian = std::endian::big, typename T>
 requires std::integral<T>
 T cvt_endian(T value)
 {
-    if constexpr (std::endian::native == std::endian::little)
+    if constexpr (std::endian::native != src_endian)
         value = std::byteswap(value);
 
     return value;
 }
 
-template<typename T>
+// This function exists to handle a smaller data type being loaded into a larger data type (e.g. a 16 bit int read into a 64 bit int) via memcpy.
+// If endian conversion required a byte swap, the value will be in the upper (right) bytes of the data type. This will handle moving them into
+// the lower (left) bytes so a second memcpy of the smaller size or a union read will produce the appropriate value.
+template<auto src_endian = std::endian::big, typename T>
 requires std::integral<T>
 T inline pack_left(T value, uint16_t source_size)
 {
-    if constexpr (std::endian::native == std::endian::little)
-        value >>= ((sizeof(T) - source_size) << 3);
+    if constexpr (std::endian::native != src_endian)
+    {
+        if constexpr (src_endian == std::endian::big)
+            value >>= ((sizeof(T) - source_size) << 3);
+        else
+            value <<= ((sizeof(T) - source_size) << 3);
+    }
 
     return value;
 }
-
-#pragma clang diagnostic pop
 
 #endif //MELON_UTIL_H

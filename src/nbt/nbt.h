@@ -22,17 +22,31 @@
 #include <variant>
 #include <memory>
 #include <memory_resource>
+#include <span>
 
 #include "util/util.h"
 
 namespace melon::nbt
 {
-#define NBT_DEBUG true
-
     class list;
 
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "OCUnusedGlobalDeclarationInspection"
+    class compound;
+
+    class primitive_tag;
+
+    namespace snbt
+    {
+        void escape_string(const std::string_view &in_str, std::string &out_str, bool always_quote = true);
+
+        namespace syntax
+        {
+            constexpr std::string_view string_unquoted_chars  = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxzy+-_.";
+            constexpr std::string_view string_chars_to_escape = R"("'\)";
+            constexpr char             string_escape_char     = '\\';
+            constexpr char             string_std_quote       = '"';
+            constexpr char             string_alt_quote       = '\'';
+        }
+    }
 
     enum tag_type_enum : int8_t
     {
@@ -53,11 +67,12 @@ namespace melon::nbt
 
     enum tag_category_enum : uint8_t
     {
-        cat_none      = 0,
-        cat_container = 1,
-        cat_primitive = 2,
-        cat_array     = 3,
-        cat_string    = 4
+        cat_none      = 0b000001,
+        cat_compound  = 0b000010,
+        cat_list      = 0b000100,
+        cat_primitive = 0b001000,
+        cat_array     = 0b010000,
+        cat_string    = 0b100000
     };
 
     struct tag_properties_s
@@ -66,7 +81,6 @@ namespace melon::nbt
         tag_category_enum category;
     };
 
-    // 127 means recursion is required
     constexpr static std::array<tag_properties_s, 13>
             tag_properties = {{
                                       { 0, tag_category_enum::cat_none },
@@ -77,9 +91,9 @@ namespace melon::nbt
                                       { 4, tag_category_enum::cat_primitive },
                                       { 8, tag_category_enum::cat_primitive },
                                       { 1, tag_category_enum::cat_array },
-                                      { 1, tag_category_enum::cat_array },
-                                      { 127, tag_category_enum::cat_container },
-                                      { 127, tag_category_enum::cat_container },
+                                      { 1, tag_category_enum::cat_string },
+                                      { 255, tag_category_enum::cat_list },
+                                      { 255, tag_category_enum::cat_compound },
                                       { 4, tag_category_enum::cat_array },
                                       { 8, tag_category_enum::cat_array }
                               }};
@@ -88,49 +102,34 @@ namespace melon::nbt
     concept is_nbt_primitive = (tag_idx < tag_properties.size()) && (tag_properties[tag_idx].category == tag_category_enum::cat_primitive);
 
     template<tag_type_enum tag_idx>
-    concept is_nbt_array = (tag_idx < tag_properties.size()) && (tag_properties[tag_idx].category == tag_category_enum::cat_array);
+    concept is_nbt_array = (tag_idx < tag_properties.size()) && ((tag_properties[tag_idx].category & (tag_category_enum::cat_array | tag_category_enum::cat_string)) != 0);
 
     template<tag_type_enum tag_idx>
-    concept is_nbt_container = (tag_idx < tag_properties.size()) && (tag_properties[tag_idx].category == tag_category_enum::cat_container);
+    concept is_nbt_container = (tag_idx < tag_properties.size()) && ((tag_properties[tag_idx].category & (tag_category_enum::cat_list | tag_category_enum::cat_compound)) != 0);
 
-    template<tag_type_enum tag_idx> requires (!is_nbt_container<tag_idx> && tag_idx != tag_end)
-    using tag_prim_t = typename std::tuple_element<tag_idx, std::tuple<void, int8_t, int16_t, int32_t, int64_t, float, double, int8_t, char, void, void, int32_t, int64_t>>::type;
+    template<tag_type_enum tag_idx>
+            requires (!is_nbt_container<tag_idx> && tag_idx != tag_end)
+    using tag_prim_t = typename std::tuple_element<tag_idx,
+            std::tuple<void, int8_t, int16_t, int32_t, int64_t, float, double, int8_t *, char *, void, void, int32_t *, int64_t *>>::type;
 
-#if NBT_DEBUG == true
-    const static char *tag_printable_names[13]{
-            "End", "Byte", "Short", "Int", "Long", "Float", "Double", "Byte Array", "String", "List", "Compound", "Int Array", "Long Array"
-    };
-#endif
+    template<tag_type_enum tag_idx>
+            requires (tag_idx != tag_end)
+    using tag_cont_t = typename std::tuple_element<tag_idx, std::tuple<void, primitive_tag, primitive_tag, primitive_tag, primitive_tag, primitive_tag, primitive_tag,
+            primitive_tag, primitive_tag, list, compound, primitive_tag, primitive_tag>>::type;
 
-#pragma clang diagnostic pop
+    template<typename T, tag_type_enum tag_idx>
+    concept is_nbt_type_match = std::is_same_v<tag_prim_t<tag_idx>, T>;
 
-    struct primitive_tag
+    class primitive_tag
     {
-        ~primitive_tag();
-
-        tag_type_enum    tag_type = tag_byte;
-        uint32_t         size = 1; // Only used for strings and arrays
-        std::pmr::string *name = nullptr;
-
-        explicit primitive_tag(tag_type_enum type_in = tag_byte, uint64_t value_in = 0, std::pmr::string *name_in = nullptr, // NOLINT(cppcoreguidelines-pro-type-member-init)
-                               [[maybe_unused]] uint32_t size_in = 1)
-                : tag_type(type_in), name(name_in), size(size_in)
-        {
-            value.generic = value_in;
-        }
-
-        primitive_tag(const primitive_tag &) = delete;
-        primitive_tag &operator=(const primitive_tag &) = delete;
-
-        primitive_tag(primitive_tag &&) noexcept;
-        primitive_tag &operator=(primitive_tag &&) noexcept;
+    public:
+        const tag_type_enum tag_type;
+        const std::pmr::string *const name;
 
         union
         {
             uint64_t generic = 0;
-
-            primitive_tag *compound;
-            primitive_tag *list;
+            void     *generic_ptr;
 
             int8_t  tag_byte;
             int16_t tag_short;
@@ -147,10 +146,71 @@ namespace melon::nbt
             int32_t *tag_int_array;
             int64_t *tag_long_array;
 
-            float  *tag_float_array;
-            double *tag_double_array;
-
         } value;
+
+        primitive_tag() = delete;
+        ~primitive_tag() = default;
+
+        primitive_tag(const primitive_tag &) = delete;
+        primitive_tag &operator=(const primitive_tag &) = delete;
+
+        primitive_tag(primitive_tag &&) = delete;
+        primitive_tag &operator=(primitive_tag &&) = delete;
+
+        void to_snbt(std::string &out);
+
+        template<tag_type_enum tag_type>
+        requires is_nbt_primitive<tag_type>
+        auto &get()
+        {
+            if constexpr (tag_type == tag_byte)
+                return value.tag_byte;
+            else if constexpr (tag_type == tag_short)
+                return value.tag_short;
+            else if constexpr (tag_type == tag_int)
+                return value.tag_int;
+            else if constexpr (tag_type == tag_long)
+                return value.tag_long;
+            else if constexpr (tag_type == tag_float)
+                return value.tag_float;
+            else if constexpr (tag_type == tag_double)
+                return value.tag_double;
+        };
+
+        template<tag_type_enum tag_type>
+        requires is_nbt_array<tag_type>
+        auto get()
+        {
+            if constexpr (tag_type == tag_string)
+                return std::string_view{ value.tag_string, size_v };
+            else if constexpr (tag_type == tag_byte_array)
+                return std::span(value.tag_byte_array, size_v);
+            else if constexpr (tag_type == tag_int_array)
+                return std::span(value.tag_int_array, size_v);
+            else if constexpr (tag_type == tag_long_array)
+                return std::span(value.tag_long_array, size_v);
+        }
+
+        [[nodiscard]] auto size() const
+        { return size_v; }
+
+    private:
+        friend class list;
+
+        friend class compound;
+
+        // Must be set to 0 if not a string or array type
+        uint32_t size_v;
+
+        explicit primitive_tag(tag_type_enum type_in = tag_byte, uint64_t value_in = 0, std::pmr::string *name_in = nullptr, uint32_t size_in = 0)
+                : tag_type(type_in), name(name_in), size_v(size_in)
+        {
+            value.generic = value_in;
+        }
+
+        // Caller must take care to allocate new memory and assign it to the generic pointer
+        void resize(uint32_t new_size)
+        { size_v = new_size; }
     };
 
     uint64_t inline __attribute__((always_inline)) read_tag_primitive(char **itr, tag_type_enum tag_type)
@@ -171,11 +231,15 @@ namespace melon::nbt
     }
 
     std::tuple<char *, int32_t> inline __attribute__((always_inline))
-    read_tag_array(char **itr, tag_type_enum tag_type, std::pmr::memory_resource *pmr_rsrc = std::pmr::get_default_resource())
+    read_tag_array(char **itr, const char *const itr_end, tag_type_enum tag_type, std::pmr::memory_resource *pmr_rsrc = std::pmr::get_default_resource())
     {
         int32_t array_len;
         std::memcpy(static_cast<void *>(&array_len), static_cast<const void *>(*itr), sizeof(array_len));
         array_len = cvt_endian(array_len);
+
+        if ((*itr + sizeof(array_len) + (array_len * tag_properties[tag_type].size) + 8) >= itr_end)
+            throw std::runtime_error("Attempt to read past buffer while parsing binary NBT data.");
+
         *itr += sizeof(array_len);
 
         // My take on a branchless conversion of an unaligned big endian array of an arbitrarily sized data type to an aligned little endian array.

@@ -11,8 +11,10 @@
 #include <optional>
 #include <memory>
 #include <memory_resource>
+#include <iterator>
 #include "nbt.h"
 #include "unordered_dense.h"
+#include "util/concepts.h"
 
 namespace melon::nbt
 {
@@ -26,73 +28,97 @@ namespace melon::nbt
         compound() = delete;
 
         // For building a compound from scratch
-        explicit compound(std::string_view name_in = "", int64_t max_size_in = -1, std::pmr::memory_resource *upstream_pmr_rsrc = std::pmr::get_default_resource());
+        explicit compound(std::string_view name_in = "", int64_t max_size_in = -1, std::unique_ptr<std::pmr::memory_resource> pmr_rsrc_in = nullptr);
 
         // For parsing a binary NBT buffer
-        explicit compound(std::unique_ptr<std::vector<char>> raw_in, std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
+        // This function expects the raw buffer provided to it to be at least 8 bytes larger than the NBT data. The deflate methods in melon::util
+        // take care of this.
+        explicit compound(std::unique_ptr<char[]> raw, size_t raw_size, std::unique_ptr<std::pmr::memory_resource> pmr_rsrc_in = nullptr);
 
-        template<tag_type_enum tag_idx, class V> requires(is_nbt_primitive<tag_idx> && std::same_as<V, tag_prim_t<tag_idx>>)
-        void put(std::string_view tag_name, V value)
+        template<tag_type_enum tag_type>
+        requires is_nbt_container<tag_type>
+        std::optional<tag_cont_t<tag_type> *> get(const std::string_view &tag_name) noexcept
         {
-            auto itr = primitives->find(tag_name);
-            uint64_t generic_value = pack_left(*((uint64_t *)(&value)), sizeof(tag_prim_t<tag_idx>));
+            auto itr = tags->find(tag_name);
 
-            if (itr == primitives->end())
-            {
-                auto *str_ptr = reinterpret_cast<std::pmr::string *>(pmr_rsrc->allocate(sizeof(std::pmr::string)));
-                auto *tag_ptr = reinterpret_cast<primitive_tag *>(pmr_rsrc->allocate(sizeof(primitive_tag)));
-
-                str_ptr = new(str_ptr) std::pmr::string(tag_name, pmr_rsrc);
-                tag_ptr = new(tag_ptr) primitive_tag(tag_idx, generic_value, str_ptr);
-
-                (*primitives)[*str_ptr] = tag_ptr;
-            }
+            if (itr == tags->end() || !std::holds_alternative<tag_cont_t<tag_type> *>(itr->second))
+                return std::nullopt;
             else
-            {
-                itr->second->value.generic = generic_value;
-            }
+                return std::get<tag_cont_t<tag_type> *>(itr->second);
         }
+
+        template<tag_type_enum tag_type>
+        requires is_nbt_primitive<tag_type>
+        std::optional<std::reference_wrapper<tag_prim_t<tag_type>>> get(const std::string_view &tag_name) noexcept
+        {
+            auto itr = tags->find(tag_name);
+
+            if (itr == tags->end() || !std::holds_alternative<tag_cont_t<tag_type> *>(itr->second))
+                return std::nullopt;
+            else
+                return std::reference_wrapper<tag_prim_t<tag_type>>(std::get<tag_cont_t<tag_type> *>(itr->second)->template get<tag_type>());
+        }
+
+        // There is no put for container types. You can get one or create one only.
+        template<tag_type_enum tag_type, is_nbt_type_match<tag_type> V>
+        requires is_nbt_primitive<tag_type>
+        void put(const std::string_view tag_name, V value)
+        {
+            auto *tag_ptr = get_primitive(tag_name, tag_type);
+            std::memcpy(static_cast<void *>(&(tag_ptr->value)), static_cast<void *>(&value), sizeof(V));
+        }
+
+        template<tag_type_enum tag_type, class V = std::remove_pointer_t<tag_prim_t<tag_type>>, std::size_t N>
+        requires is_nbt_array<tag_type> && is_nbt_type_match<std::add_pointer_t<V>, tag_type>
+        void put(const std::string_view tag_name, const std::array<V, N> &values)
+        {
+            put_array_general<V>(tag_name, tag_type, values);
+        }
+
+        template<tag_type_enum tag_type, template<class, class...> class C = std::initializer_list, class V = std::remove_pointer_t<tag_prim_t<tag_type>>, class... N>
+        requires is_nbt_array<tag_type> && is_nbt_type_match<std::add_pointer_t<V>, tag_type> && is_simple_iterable<C<V, N...>, V>
+        void put(const std::string_view tag_name, const C<V, N...> &values)
+        {
+            put_array_general<V>(tag_name, tag_type, values);
+        }
+
+        void to_snbt(std::string &out);
 
         compound(const compound &) = delete;
         compound &operator=(const compound &) = delete;
 
-        compound(compound &&) noexcept;
-        compound &operator=(compound &&) noexcept;
+        compound(compound &&) = delete;
+        compound &operator=(compound &&) = delete;
 
-#if NBT_DEBUG == true
         ~compound();
-
-        inline static uint32_t compounds_parsed;
-        inline static uint32_t lists_parsed;
-        inline static uint32_t primitives_parsed;
-        inline static uint32_t strings_parsed;
-        inline static uint32_t arrays_parsed;
-#else
-        ~compound() = default;
-#endif
     private:
         friend class list;
 
-        explicit compound(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, std::pmr::string *name_in = nullptr, bool no_header = false);
+        explicit compound(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, std::pmr::string *name_in = nullptr);
+        std::pmr::unordered_map<std::string_view, std::variant<compound *, list *, primitive_tag *>> *init_container();
 
-        template<typename T>
-        std::pmr::unordered_map<std::string_view, T> *init_container()
+        primitive_tag *get_primitive(std::string_view, tag_type_enum);
+        char *read(char *itr, const char *itr_end);
+
+        template<typename V>
+        void put_array_general(const std::string_view tag_name, tag_type_enum tag_type, const auto &values)
         {
-            void *ptr;
+            auto *tag_ptr = get_primitive(tag_name, tag_type);
 
-            ptr = pmr_rsrc->allocate(sizeof(std::pmr::unordered_map<std::string_view, T>));
-            return new(ptr) std::pmr::unordered_map<std::string_view, T>(pmr_rsrc);
+            // This knowingly leaks memory. The top level compound will free the entire pmr_rsrc when it goes out of scope.
+            if (tag_ptr->size() < values.size() || tag_ptr->value.generic == 0)
+                tag_ptr->value.generic_ptr = pmr_rsrc->allocate(sizeof(V) * values.size(), alignof(V));
+
+            tag_ptr->resize(values.size());
+            for (int idx = 0; const auto &value: values)
+                static_cast<V *>(tag_ptr->value.generic_ptr)[idx++] = value;
         }
-
-        char *read(char *itr, const char *itr_end, bool skip_header = false);
 
         std::optional<std::variant<compound *, list *>> parent;
         compound                                        *top;
         std::pmr::memory_resource                       *pmr_rsrc;
 
-        std::pmr::unordered_map<std::string_view, primitive_tag *> *primitives;
-        std::pmr::unordered_map<std::string_view, compound *>      *compounds;
-        std::pmr::unordered_map<std::string_view, list *>          *lists;
+        std::pmr::unordered_map<std::string_view, std::variant<compound *, list *, primitive_tag *>> *tags;
 
         uint16_t depth    = 0;
         size_t   size     = 0;
