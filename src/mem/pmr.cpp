@@ -5,7 +5,8 @@
 #include <iostream>
 #include "pmr.h"
 
-namespace melon::mem::pmr {
+namespace melon::mem::pmr
+{
 
     void *debug_monotonic_buffer_resource::do_allocate(std::size_t bytes, std::size_t alignment)
     {
@@ -37,5 +38,4 @@ namespace melon::mem::pmr {
         std::cout << "Destroyed memory resources. Total bytes allocated: " << total_bytes_allocated << ", Total bytes deallocated: " << total_bytes_deallocated << "\n";
         monotonic_buffer_resource::~monotonic_buffer_resource();
     }
-
 }
