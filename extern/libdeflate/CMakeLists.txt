@@ -1,8 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 project(libdeflate)
 
-set(LIBDEFLATE_DEBUG_OPTIONS "-g" "-Og")
-set(LIBDEFLATE_RELEASE_OPTIONS "-O2" "-DNDEBUG")
+if(MSVC)
+    set(LIBDEFLATE_DEBUG_OPTIONS "/Od" "/ZI")
+    set(LIBDEFLATE_RELEASE_OPTIONS "/O2" "/Zi")
+else()
+    set(LIBDEFLATE_DEBUG_OPTIONS "-g" "-Og")
+    set(LIBDEFLATE_RELEASE_OPTIONS "-O2" "-DNDEBUG")
+endif()
 
 include_directories(libdeflate)
 

@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <vector>
 #include <memory>
@@ -225,7 +226,7 @@ namespace melon::nbt
             tag_ptr->value.generic_ptr = pmr_rsrc->allocate(sizeof(V) * values.size() + padding_size, tag_properties[type].size);
 
             tag_ptr->resize(values.size());
-            for (int idx = 0; const auto &value: values)
+            for (std::size_t idx = 0; const auto &value: values)
                 static_cast<V *>(tag_ptr->value.generic_ptr)[idx++] = value;
 
             static_cast<void>(tag_ptr.release());

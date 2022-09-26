@@ -49,7 +49,7 @@ namespace melon::nbt
         }
     }
 
-    constexpr int8_t padding_size = 8;
+    constexpr std::size_t padding_size = 8;
 
     enum tag_type_enum : int8_t
     {
@@ -235,7 +235,7 @@ namespace melon::nbt
         return util::cvt_endian(var);
     }
 
-    uint64_t inline __attribute__((always_inline))
+    uint64_t inline //__attribute__((always_inline))
     read_tag_primitive(char **itr, tag_type_enum tag_type) noexcept
     {
         uint64_t prim_value;
@@ -252,7 +252,7 @@ namespace melon::nbt
         return prim_value;
     }
 
-    std::tuple<char *, int32_t> inline __attribute__((always_inline))
+    std::tuple<char *, int32_t> inline //__attribute__((always_inline))
     read_tag_array(char **itr, const char *const itr_end, tag_type_enum tag_type, std::pmr::memory_resource *pmr_rsrc)
     {
         auto array_len = read_var<int32_t>(*itr);
@@ -277,7 +277,7 @@ namespace melon::nbt
         return ret;
     }
 
-    std::tuple<char *, uint16_t> inline __attribute__((always_inline))
+    std::tuple<char *, uint16_t> inline //__attribute__((always_inline))
     read_tag_string(char **itr, const char *const itr_end, std::pmr::memory_resource *pmr_rsrc)
     {
         // Reminder: NBT strings are "Modified UTF-8" and not null terminated.
@@ -287,7 +287,7 @@ namespace melon::nbt
         if ((*itr + str_len + padding_size) >= itr_end)
             [[unlikely]] throw std::runtime_error("Attempt to read past buffer while parsing binary NBT data.");
 
-        auto *str_ptr = static_cast<char *>(pmr_rsrc->allocate(str_len + padding_size, alignof(char)));
+        auto str_ptr = static_cast<char *>(pmr_rsrc->allocate(str_len + padding_size, alignof(char)));
         std::memcpy(str_ptr, *itr, str_len);
         *itr += str_len;
 

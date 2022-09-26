@@ -1,8 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 project(melon)
 
-set(MELON_DEBUG_OPTIONS "-g" "-O0" "-Wall")
-set(MELON_RELEASE_OPTIONS "-O3" "-DNDEBUG")
+if(MSVC)
+    set(MELON_DEBUG_OPTIONS "/Od" "/ZI")
+    set(MELON_RELEASE_OPTIONS "/O2" "/Zi")
+else()
+    set(MELON_DEBUG_OPTIONS "-g" "-O0" "-Wall")
+    set(MELON_RELEASE_OPTIONS "-O3" "-DNDEBUG")
+endif()
 
 set(CMAKE_CXX_FLAGS_DEBUG "")
 set(CMAKE_CXX_FLAGS_RELEASE "")
