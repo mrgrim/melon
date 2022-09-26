@@ -133,7 +133,7 @@ namespace melon::nbt
     {
     public:
         const tag_type_enum tag_type;
-        const std::pmr::string *const name;
+        std::pmr::string *const name;
 
         union
         {

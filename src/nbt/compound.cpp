@@ -125,12 +125,6 @@ namespace melon::nbt
 
             itr = tags.erase(itr);
         }
-
-        if (parent.has_value())
-            std::visit([this](auto &&parent_in) {
-                parent_in->adjust_size(this->size * -1);
-                parent_in->remove_container(this);
-            }, parent.value());
     }
 
     char *compound::read(char *itr, const char *const itr_end)
@@ -280,10 +274,12 @@ namespace melon::nbt
         auto container = mem::pmr::make_pmr_unique<compound>(pmr_rsrc, this, "");
 
         if (builder) builder(container.get());
-        tags.push_back(static_cast<void *>(container.get()));
+
+        auto cont_ptr = container.get();
+        tags.push_back(std::move(container));
 
         count++;
-        return container.release();
+        return cont_ptr;
     }
 
     void compound::adjust_size(int64_t by)
@@ -299,12 +295,5 @@ namespace melon::nbt
 
         // Only adjust size after all recursive checks to allow strong exception guarantee.
         size += by;
-    }
-
-    void compound::remove_container(std::variant<compound *, list *> container)
-    {
-        std::visit([this](auto &&tag) {
-            tags.erase(*(tag->name));
-        }, container);
     }
 }

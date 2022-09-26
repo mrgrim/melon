@@ -173,7 +173,6 @@ namespace melon::nbt
         std::pair<primitive_tag *, bool> get_primitive(std::string_view, tag_type_enum, bool overwrite = false);
         char *read(char *itr, const char *itr_end);
         void adjust_size(int64_t by);
-        void remove_container(std::variant<compound *, list *> container);
 
         template<typename V>
         void insert_array_general(const std::string_view tag_name, tag_type_enum tag_type, const auto &values, bool overwrite = false)
