@@ -32,6 +32,8 @@ namespace melon::nbt
         requires (tag_type != tag_end)
         class iterator
         {
+            friend class list;
+
             tag_list_t *ptr;
             int     size;
             int     index;
@@ -119,6 +121,15 @@ namespace melon::nbt
         }
 
         template<tag_type_enum tag_type>
+        requires is_nbt_container<tag_type>
+        auto &at(int idx)
+        {
+            if (type != tag_type) [[unlikely]] throw std::runtime_error("Attempted access of invalid NBT list type element.");
+            auto cont_ptr = std::get<mem::pmr::unique_ptr<tag_cont_t<tag_type>>>(tags.at(idx)).get();
+            return *cont_ptr;
+        }
+
+        template<tag_type_enum tag_type>
         requires is_nbt_primitive<tag_type>
         auto &at(int idx)
         {
@@ -127,46 +138,53 @@ namespace melon::nbt
         }
 
         template<tag_type_enum tag_type>
-        requires is_nbt_array<tag_type> || is_nbt_container<tag_type>
+        requires is_nbt_array<tag_type>
         auto at(int idx)
         {
             if (type != tag_type) [[unlikely]] throw std::runtime_error("Attempted access of invalid NBT list type element.");
-            auto &cont_ref = std::get<mem::pmr::unique_ptr<tag_cont_t<tag_type>>>(tags.at(idx));
-
-            if constexpr (tag_properties[tag_type].category & (cat_compound | cat_list))
-                return cont_ref.get();
-            else
-                return cont_ref->template get<tag_type>();
+            return std::get<mem::pmr::unique_ptr<tag_cont_t<tag_type>>>(tags.at(idx))->template get<tag_type>();
         }
         // @formatter:on
 
         // It's in compound.cpp :sob:
         template<tag_type_enum tag_type>
         requires (tag_type == tag_compound)
-        std::optional<compound *> push(const std::function<void(compound *)> &builder = nullptr);
+        std::optional<std::reference_wrapper<compound>> push(const std::function<void(compound &)> &builder = nullptr);
 
         template<tag_type_enum tag_type>
         requires (tag_type == tag_list)
-        std::optional<list *> push(tag_type_enum tag_type_in, const std::function<void(list *)> &builder = nullptr)
+        std::optional<std::reference_wrapper<list>> push(tag_type_enum tag_type_in, const std::function<void(list &)> &builder = nullptr)
         {
-            auto container = mem::pmr::make_pmr_unique<list>(pmr_rsrc, this, "", tag_type_in);
+            auto container = mem::pmr::make_unique<list>(pmr_rsrc, this, "", tag_type_in);
 
-            if (builder) builder(container.get());
+            if (builder) builder(*container);
 
             auto cont_ptr = container.get();
             tags.push_back(std::move(container));
 
             count++;
-            return cont_ptr;
+            return *cont_ptr;
         }
 
-        template<tag_type_enum tag_type>
-        requires is_nbt_primitive<tag_type>
-        void push(tag_prim_t<tag_type> value)
+        template<tag_type_enum tag_type, class V = tag_prim_t<tag_type>>
+        requires is_nbt_primitive<tag_type> && is_nbt_type_match<V, tag_type>
+        void push(V value)
         {
-            auto tag_ptr = mem::pmr::make_pmr_unique<primitive_tag>(pmr_rsrc, type);
+            auto tag_ptr = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type);
 
-            std::memcpy(static_cast<void *>(&(tag_ptr->value.generic)), static_cast<const void *>(&value), sizeof(tag_prim_t<tag_type>));
+            if constexpr (tag_type == tag_byte)
+                tag_ptr->value.tag_byte = value;
+            else if constexpr (tag_type == tag_short)
+                tag_ptr->value.tag_short = value;
+            else if constexpr (tag_type == tag_int)
+                tag_ptr->value.tag_int = value;
+            else if constexpr (tag_type == tag_long)
+                tag_ptr->value.tag_long = value;
+            else if constexpr (tag_type == tag_float)
+                tag_ptr->value.tag_float = value;
+            else if constexpr (tag_type == tag_double)
+                tag_ptr->value.tag_double = value;
+
             tags.push_back(std::move(tag_ptr));
             count++;
         }
@@ -201,16 +219,18 @@ namespace melon::nbt
         void reserve(size_t count_in)
         { tags.reserve(count_in); }
 
+        [[nodiscard]] auto size() const { return size_v; }
+
         template<tag_type_enum tag_type>
         struct range
         {
-            list *list_ptr;
+            list &list_ptr;
 
             auto begin()
-            { return list_ptr->begin<tag_type>(); }
+            { return list_ptr.begin<tag_type>(); }
 
             auto end()
-            { return list_ptr->end<tag_type>(); }
+            { return list_ptr.end<tag_type>(); }
         };
 
         ~list();
@@ -226,25 +246,27 @@ namespace melon::nbt
 
         char *read(char *itr, const char *itr_end);
         void adjust_size(int64_t by);
+        void clean_primitives() noexcept;
 
         template<typename V>
         void push_array_general(const auto &values)
         {
-            auto tag_ptr = mem::pmr::make_pmr_unique<primitive_tag>(pmr_rsrc, type);
+            auto array_ptr = mem::pmr::make_unique<V[]>(pmr_rsrc, values.size() + (padding_size / sizeof(V)));
+            auto tag_ptr = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type);
 
-            tag_ptr->value.generic_ptr = pmr_rsrc->allocate(sizeof(V) * values.size() + padding_size, tag_properties[type].size);
-
-            tag_ptr->resize(values.size());
+            tag_ptr->change_count(values.size());
             for (std::size_t idx = 0; const auto &value: values)
-                static_cast<V *>(tag_ptr->value.generic_ptr)[idx++] = value;
+                array_ptr[idx++] = value;
 
+            tag_ptr->value.generic_ptr = static_cast<void *>(array_ptr.get());
             tags.push_back(std::move(tag_ptr));
+            static_cast<void>(array_ptr.release());
         }
 
         tag_list_t tags;
 
         uint16_t depth    = 0;
-        size_t   size     = 0;
+        size_t   size_v   = 0;
         int64_t  max_size = -1;
     };
 

@@ -111,7 +111,7 @@ namespace melon::nbt
     concept is_nbt_container = (tag_idx < tag_properties.size()) && ((tag_properties[tag_idx].category & (tag_category_enum::cat_list | tag_category_enum::cat_compound)) != 0);
 
     template<tag_type_enum tag_idx>
-    requires (tag_idx != tag_end) && (tag_idx < tag_properties.size())
+            requires (tag_idx != tag_end) && (tag_idx < tag_properties.size())
     using tag_prim_t = typename std::tuple_element<tag_idx,
             std::tuple<void, int8_t, int16_t, int32_t, int64_t, float, double, int8_t *, char *, list *, compound *, int32_t *, int64_t *>>::type;
 
@@ -121,14 +121,15 @@ namespace melon::nbt
             std::tuple<void, int8_t, int16_t, int32_t, int64_t, float, double, std::span<int8_t>, std::string_view, list *, compound *, std::span<int32_t>, std::span<int64_t>>>::type;
 
     template<tag_type_enum tag_idx>
-    requires (tag_idx != tag_end) && (tag_idx < tag_properties.size())
+            requires (tag_idx != tag_end) && (tag_idx < tag_properties.size())
     using tag_cont_t = typename std::tuple_element<tag_idx, std::tuple<void, primitive_tag, primitive_tag, primitive_tag, primitive_tag, primitive_tag, primitive_tag,
             primitive_tag, primitive_tag, list, compound, primitive_tag, primitive_tag>>::type;
 
     template<typename T, tag_type_enum tag_idx>
     concept is_nbt_type_match = std::is_same_v<tag_prim_t<tag_idx>, T>;
 
-    // Class does not own the pointers to held array types
+    // Class does not own the pointers to held array types. This is to avoid storing the state necessary to do so with PMR.
+    // Exploit the fact that no sane compiler will mess this up, despite this being the standards most idiotic instance of UB
     class primitive_tag
     {
     public:
@@ -191,17 +192,27 @@ namespace melon::nbt
         auto get()
         {
             if constexpr (tag_type == tag_string)
-                return std::string_view{ value.tag_string, size_v };
+                return std::string_view{ value.tag_string, count_v };
             else if constexpr (tag_type == tag_byte_array)
-                return std::span(value.tag_byte_array, size_v);
+                return std::span(value.tag_byte_array, count_v);
             else if constexpr (tag_type == tag_int_array)
-                return std::span(value.tag_int_array, size_v);
+                return std::span(value.tag_int_array, count_v);
             else if constexpr (tag_type == tag_long_array)
-                return std::span(value.tag_long_array, size_v);
+                return std::span(value.tag_long_array, count_v);
         }
 
-        [[nodiscard]] auto size() const
-        { return size_v; }
+        [[nodiscard]] auto count() const
+        { return count_v; }
+
+        [[nodiscard]] size_t size() const
+        {
+            if (count() == 0)
+                return sizeof(uint16_t) + name->size() + tag_properties[tag_type].size;
+            else if (tag_type == tag_string)
+                return sizeof(uint16_t) + name->size() + sizeof(uint16_t) + count();
+            else
+                return sizeof(uint16_t) + name->size() + sizeof(int32_t) + (count() * tag_properties[tag_type].size);
+        }
 
     private:
         friend class list;
@@ -209,21 +220,19 @@ namespace melon::nbt
         friend class compound;
 
         template<class T, class... Args>
-        friend auto mem::pmr::make_obj_using_pmr(std::pmr::memory_resource *pmr_rsrc, Args&&... args)
+        friend auto mem::pmr::make_obj_using_pmr(std::pmr::memory_resource *pmr_rsrc, Args &&... args)
         requires (!std::is_array_v<T>);
 
         // Must be set to 0 if not a string or array type
-        uint32_t size_v;
+        size_t count_v;
 
-        explicit primitive_tag(tag_type_enum type_in = tag_byte, uint64_t value_in = 0, std::pmr::string *name_in = nullptr, uint32_t size_in = 0) noexcept
-                : tag_type(type_in), name(name_in), size_v(size_in)
-        {
-            value.generic = value_in;
-        }
+        explicit primitive_tag(tag_type_enum type_in = tag_byte, uint64_t value_in = 0, std::pmr::string *name_in = nullptr, size_t size_in = 0) noexcept
+                : tag_type(type_in), name(name_in), count_v(size_in)
+        { value.generic = value_in; }
 
         // Caller must take care to allocate new memory and assign it to the generic pointer
-        void resize(uint32_t new_size)
-        { size_v = new_size; }
+        void change_count(uint32_t new_size)
+        { count_v = new_size; }
     };
 
     template<class T>
@@ -235,7 +244,10 @@ namespace melon::nbt
         return util::cvt_endian(var);
     }
 
-    uint64_t inline //__attribute__((always_inline))
+    uint64_t inline
+#ifdef __GNUC__
+    __attribute__((always_inline))
+#endif
     read_tag_primitive(char **itr, tag_type_enum tag_type) noexcept
     {
         uint64_t prim_value;
@@ -252,7 +264,10 @@ namespace melon::nbt
         return prim_value;
     }
 
-    std::tuple<char *, int32_t> inline //__attribute__((always_inline))
+    std::tuple<std::unique_ptr<char[], mem::pmr::generic_deleter<char[]>>, int32_t> inline
+#ifdef __GNUC__
+    __attribute__((always_inline))
+#endif
     read_tag_array(char **itr, const char *const itr_end, tag_type_enum tag_type, std::pmr::memory_resource *pmr_rsrc)
     {
         auto array_len = read_var<int32_t>(*itr);
@@ -262,10 +277,14 @@ namespace melon::nbt
         if ((*itr + (array_len * tag_properties[tag_type].size) + padding_size) >= itr_end)
             [[unlikely]] throw std::runtime_error("Attempt to read past buffer while parsing binary NBT data.");
 
-        // My take on a branchless conversion of an unaligned big endian array of an arbitrarily sized data type to an aligned little endian array.
-        auto *array_ptr = static_cast<char *>(pmr_rsrc->allocate(array_len * tag_properties[tag_type].size + padding_size, tag_properties[tag_type].size) /* alignment */);
-        auto ret        = std::make_tuple(array_ptr, array_len);
+        auto array_size  = array_len * tag_properties[tag_type].size + padding_size;
+        auto array_align = tag_properties[tag_type].size;
+        auto array_ptr   = static_cast<char *>(pmr_rsrc->allocate(array_size, array_align));
 
+        auto array_uptr = std::unique_ptr<char[], mem::pmr::generic_deleter<char[]>>
+                (array_ptr, mem::pmr::generic_deleter<char[]>(pmr_rsrc, array_size, array_align));
+
+        // My take on a branchless conversion of an unaligned big endian array of an arbitrarily sized data type to an aligned little endian array.
         for (auto array_idx = 0; array_idx < array_len; array_idx++)
         {
             uint64_t prim_value = read_tag_primitive(itr, tag_type);
@@ -274,10 +293,13 @@ namespace melon::nbt
             array_ptr += tag_properties[tag_type].size;
         }
 
-        return ret;
+        return std::make_tuple(std::move(array_uptr), array_len);
     }
 
-    std::tuple<char *, uint16_t> inline //__attribute__((always_inline))
+    std::tuple<std::unique_ptr<char[], mem::pmr::array_deleter<char[]>>, uint16_t> inline
+#ifdef __GNUC__
+    __attribute__((always_inline))
+#endif
     read_tag_string(char **itr, const char *const itr_end, std::pmr::memory_resource *pmr_rsrc)
     {
         // Reminder: NBT strings are "Modified UTF-8" and not null terminated.
@@ -287,11 +309,11 @@ namespace melon::nbt
         if ((*itr + str_len + padding_size) >= itr_end)
             [[unlikely]] throw std::runtime_error("Attempt to read past buffer while parsing binary NBT data.");
 
-        auto str_ptr = static_cast<char *>(pmr_rsrc->allocate(str_len + padding_size, alignof(char)));
-        std::memcpy(str_ptr, *itr, str_len);
+        auto str_ptr = mem::pmr::make_unique<char[]>(pmr_rsrc, str_len + padding_size);
+        std::memcpy(str_ptr.get(), *itr, str_len);
         *itr += str_len;
 
-        return std::make_tuple(str_ptr, str_len);
+        return std::make_tuple(std::move(str_ptr), str_len);
     }
 }
 

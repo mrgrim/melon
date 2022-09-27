@@ -18,8 +18,8 @@ namespace melon::nbt
     compound::compound(std::string_view name_in, int64_t max_size_in, std::pmr::memory_resource *pmr_rsrc_in)
             : parent(std::nullopt),
               top(this),
-              pmr_rsrc(new mem::pmr::recording_mem_resource(pmr_rsrc_in)),
-              name(mem::pmr::make_pmr_unique<std::pmr::string>(pmr_rsrc, name_in)),
+              pmr_rsrc(new mem::pmr::recording_mem_resource(pmr_rsrc_in, true)),
+              name(mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, name_in)),
               tags(tag_list_t(pmr_rsrc)),
               depth(1),
               max_size(max_size_in)
@@ -35,8 +35,8 @@ namespace melon::nbt
     compound::compound(std::unique_ptr<char[]> raw, size_t raw_size, std::pmr::memory_resource *pmr_rsrc_in)
             : parent(std::nullopt),
               top(this),
-              pmr_rsrc(new mem::pmr::recording_mem_resource(pmr_rsrc_in)),
-              name(mem::pmr::make_pmr_unique<std::pmr::string>(pmr_rsrc, "")),
+              pmr_rsrc(new mem::pmr::recording_mem_resource(pmr_rsrc_in, true)),
+              name(mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, "")),
               tags(tag_list_t(pmr_rsrc)),
               depth(1),
               max_size(-1)
@@ -46,18 +46,28 @@ namespace melon::nbt
         auto itr = raw.get();
         if (static_cast<tag_type_enum>(*itr++) != tag_compound) [[unlikely]] throw std::runtime_error("NBT tag type not compound.");
 
-        auto name_len = read_var<uint16_t>(itr);
-        *name = std::string_view(itr, name_len);
+        try
+        {
+            auto name_len = read_var<uint16_t>(itr);
+            *name = std::string_view(itr, name_len);
 
-        itr += name_len;
-        read(itr, raw.get() + raw_size);
+            itr += name_len;
+            size_v += 3;
+
+            read(itr, raw.get() + raw_size);
+        }
+        catch (...)
+        {
+            clear();
+            throw;
+        }
     }
 
     compound::compound(std::variant<compound *, list *> parent_in, std::string_view name_in)
             : parent(parent_in),
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
               pmr_rsrc(top->pmr_rsrc),
-              name(mem::pmr::make_pmr_unique<std::pmr::string>(pmr_rsrc, name_in)),
+              name(mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, name_in)),
               tags(tag_list_t(pmr_rsrc))
     {
         if (name_in.size() > std::numeric_limits<uint16_t>::max()) [[unlikely]] throw std::runtime_error("Attempted to create NBT compound with too large name.");
@@ -87,50 +97,28 @@ namespace melon::nbt
 
         if (depth > 512) [[unlikely]] throw std::runtime_error("NBT Depth exceeds 512.");
 
-        pmr_rsrc->start_recording();
-
         try
         {
             *itr_in = read(*itr_in, itr_end);
         }
         catch (...)
         {
-            // Just dump the entire structure under us to provide strong guarantee.
-            pmr_rsrc->deallocate_recorded();
-            pmr_rsrc->stop_recording();
+            clear();
             throw;
         }
-
-        pmr_rsrc->stop_recording();
     }
 
     compound::~compound()
     {
-        for (auto itr = tags.begin(); itr != tags.end();)
-        {
-            auto &[key, tag] = *itr;
-            std::visit([this](auto &&tag_in) {
-                if constexpr (std::is_same_v<std::decay_t<decltype(tag_in)>, primitive_tag *>)
-                {
-                    if (tag_properties[tag_in->tag_type].category & (cat_array | cat_string))
-                    {
-                        pmr_rsrc->deallocate(tag_in->value.generic_ptr, tag_in->size() * tag_properties[tag_in->tag_type].size + padding_size,
-                                             tag_properties[tag_in->tag_type].size);
-                    }
-
-                    std::destroy_at(tag_in);
-                    pmr_rsrc->deallocate(tag_in, sizeof(std::remove_pointer_t<decltype(tag_in)>), alignof(std::remove_pointer_t<decltype(tag_in)>));
-                }
-            }, tag);
-
-            itr = tags.erase(itr);
-        }
+        clear();
+        if (this == top)
+            std::cout << pmr_rsrc->get_records().size() << " Allocations left in the record for compound." << std::endl;
     }
 
     char *compound::read(char *itr, const char *const itr_end)
     {
         static_assert(sizeof(tag_type_enum) == sizeof(std::byte));
-        auto     itr_start = itr;
+        auto itr_start = itr;
 
         auto tag_type = static_cast<tag_type_enum>(*itr++);
         if (static_cast<uint8_t>(tag_type) >= tag_properties.size()) [[unlikely]] throw std::runtime_error("Invalid NBT Tag Type.");
@@ -142,14 +130,15 @@ namespace melon::nbt
             if ((itr + name_len + padding_size) >= itr_end)
                 [[unlikely]] throw std::runtime_error("Attempt to read past buffer while parsing binary NBT data.");
 
-            auto tag_name = mem::pmr::make_pmr_unique<std::pmr::string>(pmr_rsrc, itr, name_len);
+            auto tag_name     = mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, itr, name_len);
             auto tag_name_ptr = tag_name.get();
             itr += name_len;
 
             auto create_and_insert = [this, &tag_name_ptr]<class T, class ...Args>(Args &&... args) {
-                auto tag_ptr = mem::pmr::make_obj_using_pmr<T>(pmr_rsrc, std::forward<Args>(args)...);
-                const auto &[_, success] = tags.insert(std::pair{ std::string_view(*tag_name_ptr), tag_ptr });
+                auto tag_ptr = mem::pmr::make_unique<T>(pmr_rsrc, std::forward<Args>(args)...);
+                const auto &[_, success] = tags.insert(std::pair{ std::string_view(*tag_name_ptr), tag_ptr.get() });
                 if (!success) throw std::runtime_error("Unable to insert NBT tag to compound (possible duplicate).");
+                static_cast<void>(tag_ptr.release());
             };
 
             if (tag_properties[tag_type].category & (cat_compound | cat_list))
@@ -175,17 +164,19 @@ namespace melon::nbt
             {
                 if (tag_type == tag_string)
                 {
-                    const auto &[str_ptr, str_len] = read_tag_string(&itr, itr_end, pmr_rsrc);
-                    create_and_insert.template operator()<primitive_tag>(tag_type, std::bit_cast<uint64_t>(str_ptr), tag_name.get(), static_cast<uint32_t>(str_len));
+                    auto [str_ptr, str_len] = read_tag_string(&itr, itr_end, pmr_rsrc);
+                    create_and_insert.template operator()<primitive_tag>(tag_type, std::bit_cast<uint64_t>(str_ptr.get()), tag_name.get(), static_cast<uint32_t>(str_len));
                     static_cast<void>(tag_name.release());
+                    static_cast<void>(str_ptr.release());
                 }
                 else
                 {
-                    const auto &[array_ptr, array_len] = read_tag_array(&itr, itr_end, tag_type, pmr_rsrc);
+                    auto [array_ptr, array_len] = read_tag_array(&itr, itr_end, tag_type, pmr_rsrc);
                     if (array_len < 0) [[unlikely]] throw std::runtime_error("Found array with negative length while parsing binary NBT data.");
 
-                    create_and_insert.template operator()<primitive_tag>(tag_type, std::bit_cast<uint64_t>(array_ptr), tag_name.get(), static_cast<uint32_t>(array_len));
+                    create_and_insert.template operator()<primitive_tag>(tag_type, std::bit_cast<uint64_t>(array_ptr.get()), tag_name.get(), static_cast<uint32_t>(array_len));
                     static_cast<void>(tag_name.release());
+                    static_cast<void>(array_ptr.release());
                 }
             }
 
@@ -195,7 +186,7 @@ namespace melon::nbt
 
         if (tag_type != tag_end) [[unlikely]] throw std::runtime_error("NBT compound parsing ended before reaching END tag.");
 
-        size = itr - itr_start;
+        size_v += itr - itr_start;
         return itr;
     }
 
@@ -235,56 +226,43 @@ namespace melon::nbt
         return out;
     }
 
-    std::pair<primitive_tag *, bool> compound::get_primitive(std::string_view tag_name, tag_type_enum tag_type, bool overwrite)
+    std::pair<mem::pmr::unique_ptr<std::pmr::string>, mem::pmr::unique_ptr<primitive_tag>>
+    compound::new_primitive(std::string_view tag_name, tag_type_enum tag_type, bool overwrite)
     {
-        auto          itr    = tags.find(tag_name);
-        primitive_tag *tag_ptr;
-        bool          is_new = false;
+        auto itr = tags.find(tag_name);
 
-        if (itr == tags.end())
+        if (itr != tags.end())
         {
-            auto str_ptr = mem::pmr::make_pmr_unique<std::pmr::string>(pmr_rsrc, tag_name);
-            auto tag_ptr_u = mem::pmr::make_pmr_unique<primitive_tag>(pmr_rsrc, tag_type, 0, str_ptr.get());
-
-            const auto &[_, success] = tags.insert(std::pair{ std::string_view(*str_ptr), tag_ptr_u.get() });
-            if (!success) throw std::runtime_error("Failed to insert new tag into NBT compound.");
-
-            is_new = true;
-            static_cast<void>(str_ptr.release());
-            tag_ptr = tag_ptr_u.release();
-        }
-        else if (overwrite)
-        {
-            if (!(std::holds_alternative<primitive_tag *>(itr->second) &&
-                  (tag_ptr = std::get<primitive_tag *>(itr->second))->tag_type == tag_type))
-                [[unlikely]] throw std::runtime_error("Attempted to write wrong type to NBT tag.");
-        }
-        else
-        {
-            throw std::runtime_error("Attempted to insert over existing key in NBT compound.");
+            if (overwrite)
+                destroy_tag(itr);
+            else
+                throw std::runtime_error("Attempted to insert over existing key in NBT compound.");
         }
 
-        return { tag_ptr, is_new };
+        auto str_ptr = mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, tag_name);
+        auto tag_ptr = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, tag_type, 0, str_ptr.get());
+
+        return { std::move(str_ptr), std::move(tag_ptr) };
     }
 
     // Circular dependency hell
     template<>
-    std::optional<compound *> list::push<tag_compound>(const std::function<void(compound *)> &builder)
+    std::optional<std::reference_wrapper<compound>> list::push<tag_compound>(const std::function<void(compound &)> &builder)
     {
-        auto container = mem::pmr::make_pmr_unique<compound>(pmr_rsrc, this, "");
+        auto container = mem::pmr::make_unique<compound>(pmr_rsrc, this, "");
 
-        if (builder) builder(container.get());
+        if (builder) builder(*container);
 
         auto cont_ptr = container.get();
         tags.push_back(std::move(container));
 
         count++;
-        return cont_ptr;
+        return *cont_ptr;
     }
 
     void compound::adjust_size(int64_t by)
     {
-        if (max_size > -1 && by > -1 && (size + by) > static_cast<uint64_t>(max_size)) [[unlikely]] throw std::runtime_error("NBT compound grew too large.");
+        if (max_size > -1 && by > -1 && (size_v + by) > static_cast<uint64_t>(max_size)) [[unlikely]] throw std::runtime_error("NBT compound grew too large.");
 
         if (parent.has_value())
         {
@@ -294,6 +272,41 @@ namespace melon::nbt
         }
 
         // Only adjust size after all recursive checks to allow strong exception guarantee.
-        size += by;
+        size_v += by;
+    }
+
+    compound::tag_list_t::iterator compound::destroy_tag(const tag_list_t::iterator &itr)
+    {
+        return std::visit([this, &itr](auto tag_ptr) -> auto {
+            const auto &ret_itr = tags.erase(itr);
+            this->adjust_size(static_cast<int64_t>(tag_ptr->size()) * -1);
+
+            if constexpr (std::is_same_v<decltype(tag_ptr), primitive_tag *>)
+            {
+                if (tag_ptr->name != nullptr)
+                {
+                    std::destroy_at(tag_ptr->name);
+                    pmr_rsrc->deallocate(tag_ptr->name, sizeof(std::remove_pointer_t<decltype(tag_ptr->name)>), alignof(std::remove_pointer_t<decltype(tag_ptr->name)>));
+                }
+
+                if (tag_properties[tag_ptr->tag_type].category & (cat_array | cat_string))
+                    if (tag_ptr->value.generic_ptr != nullptr)
+                        pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->count() * tag_properties[tag_ptr->tag_type].size + padding_size,
+                                             tag_properties[tag_ptr->tag_type].size);
+            }
+
+            std::destroy_at(tag_ptr);
+            pmr_rsrc->deallocate(tag_ptr, sizeof(std::remove_pointer_t<decltype(tag_ptr)>), alignof(std::remove_pointer_t<decltype(tag_ptr)>));
+            return ret_itr;
+        }, itr->second);
+    }
+
+    void compound::clear()
+    {
+        auto itr = tags.begin();
+        while (itr != tags.end())
+        {
+            itr = destroy_tag(itr);
+        }
     }
 }

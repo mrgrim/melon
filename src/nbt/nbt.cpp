@@ -49,14 +49,14 @@ namespace melon::nbt
         else if (tag_properties[tag_type].category == cat_array)
         {
             auto print_array = [this, &buf, &out](auto array_ptr, char suffix = 0) {
-                for (uint32_t idx = 0; idx < size_v; idx++)
+                for (uint32_t idx = 0; idx < count_v; idx++)
                 {
                     if (auto [ptr, ec] = std::to_chars(buf, buf + buf_len, array_ptr[idx]); ec == std::errc())
                     {
                         out.append(buf, ptr);
                         if (suffix) out.push_back(suffix);
 
-                        if (idx != (size_v - 1)) out.push_back(',');
+                        if (idx != (count_v - 1)) out.push_back(',');
                     }
                     else
                         [[unlikely]] throw std::runtime_error("Error converting NBT primitive to string: " + std::make_error_code(ec).message());
@@ -77,7 +77,7 @@ namespace melon::nbt
         }
         else if (tag_properties[tag_type].category == cat_string)
         {
-            auto view = std::string_view(value.tag_string, size_v);
+            auto view = std::string_view(value.tag_string, count_v);
             snbt::escape_string(view, out);
         }
     }
