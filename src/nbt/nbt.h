@@ -26,6 +26,7 @@
 
 #include "util/util.h"
 #include "mem/pmr.h"
+#include "util/concepts.h"
 
 namespace melon::nbt
 {
@@ -67,6 +68,7 @@ namespace melon::nbt
         tag_int_array  = 11,
         tag_long_array = 12
     };
+    constexpr static size_t tag_count    = 13;
 
     enum tag_category_enum : uint8_t
     {
@@ -84,7 +86,7 @@ namespace melon::nbt
         tag_category_enum category;
     };
 
-    constexpr static std::array<tag_properties_s, 13>
+    constexpr static std::array<tag_properties_s, tag_count>
             tag_properties = {{
                                       { 0, tag_category_enum::cat_none },
                                       { sizeof(int8_t), tag_category_enum::cat_primitive },
@@ -100,25 +102,61 @@ namespace melon::nbt
                                       { sizeof(int32_t), tag_category_enum::cat_array },
                                       { sizeof(int64_t), tag_category_enum::cat_array }
                               }};
+    template<tag_type_enum tag_idx>
+    concept is_nbt_primitive = (tag_idx < tag_count) && (tag_properties[tag_idx].category == tag_category_enum::cat_primitive);
 
     template<tag_type_enum tag_idx>
-    concept is_nbt_primitive = (tag_idx < tag_properties.size()) && (tag_properties[tag_idx].category == tag_category_enum::cat_primitive);
+    concept is_nbt_array = (tag_idx < tag_count) && ((tag_properties[tag_idx].category & (tag_category_enum::cat_array | tag_category_enum::cat_string)) != 0);
 
     template<tag_type_enum tag_idx>
-    concept is_nbt_array = (tag_idx < tag_properties.size()) && ((tag_properties[tag_idx].category & (tag_category_enum::cat_array | tag_category_enum::cat_string)) != 0);
+    concept is_nbt_container = (tag_idx < tag_count) && ((tag_properties[tag_idx].category & (tag_category_enum::cat_list | tag_category_enum::cat_compound)) != 0);
+
+    template<class T>
+    concept is_nbt_container_t = std::is_same_v<std::remove_pointer_t<T>, compound> || std::is_same_v<std::remove_pointer_t<T>, list>;
 
     template<tag_type_enum tag_idx>
-    concept is_nbt_container = (tag_idx < tag_properties.size()) && ((tag_properties[tag_idx].category & (tag_category_enum::cat_list | tag_category_enum::cat_compound)) != 0);
-
-    template<tag_type_enum tag_idx>
-            requires (tag_idx != tag_end) && (tag_idx < tag_properties.size())
+            requires (tag_idx != tag_end) && (tag_idx < tag_count)
     using tag_prim_t = typename std::tuple_element<tag_idx,
             std::tuple<void, int8_t, int16_t, int32_t, int64_t, float, double, int8_t *, char *, list *, compound *, int32_t *, int64_t *>>::type;
 
+    using tag_access_types = std::tuple<void, int8_t, int16_t, int32_t, int64_t, float, double, std::span<int8_t>, std::string_view, list, compound, std::span<int32_t>, std::span<int64_t>>;
     template<tag_type_enum tag_idx>
-            requires (tag_idx != tag_end) && (tag_idx < tag_properties.size())
-    using tag_iter_t = typename std::tuple_element<tag_idx,
-            std::tuple<void, int8_t, int16_t, int32_t, int64_t, float, double, std::span<int8_t>, std::string_view, list *, compound *, std::span<int32_t>, std::span<int64_t>>>::type;
+    using tag_access_t = typename std::tuple_element<tag_idx, tag_access_types>::type;
+
+    template<class T>
+    struct refwrap_variant_types
+    {
+    };
+
+    template<std::same_as<void> T>
+    struct refwrap_variant_types<T>
+    {
+        using type = std::monostate;
+    };
+
+    template<util::is_contiguous_view T>
+    struct refwrap_variant_types<T>
+    {
+        using type = T;
+    };
+
+    template<util::fundamental T>
+    requires (!std::is_same_v<void, T>)
+    struct refwrap_variant_types<T>
+    {
+        using type = std::reference_wrapper<std::remove_pointer_t<T>>;
+    };
+
+    template<is_nbt_container_t T>
+    struct refwrap_variant_types<T>
+    {
+        using type = std::reference_wrapper<std::remove_pointer_t<T>>;
+    };
+
+    template<class T>
+    using refwrap_variant_types_t = typename refwrap_variant_types<T>::type;
+
+    using tag_variant_t = util::transform_tuple_types<refwrap_variant_types_t, std::variant, tag_access_types>::type;
 
     template<tag_type_enum tag_idx>
             requires (tag_idx != tag_end) && (tag_idx < tag_properties.size())
@@ -128,10 +166,14 @@ namespace melon::nbt
     template<typename T, tag_type_enum tag_idx>
     concept is_nbt_type_match = std::is_same_v<tag_prim_t<tag_idx>, T>;
 
-    // Class does not own the pointers to held array types. This is to avoid storing the state necessary to do so with PMR.
-    // Exploit the fact that no sane compiler will mess this up, despite this being the standards most idiotic instance of UB
+// Class does not own the pointers to held array types. This is to avoid storing the state necessary to do so with PMR.
+// Exploit the fact that no sane compiler will mess this up, despite this being the standards most idiotic instance of UB
     class primitive_tag
     {
+        struct size_params : util::forced_named_init<size_params> {
+            bool full_tag;
+        };
+
     public:
         const tag_type_enum tag_type;
         std::pmr::string *const name;
@@ -201,17 +243,20 @@ namespace melon::nbt
                 return std::span(value.tag_long_array, count_v);
         }
 
+        tag_variant_t get_generic();
+
         [[nodiscard]] auto count() const
         { return count_v; }
 
-        [[nodiscard]] size_t size() const
+        [[nodiscard]] size_t size(size_params params = { .full_tag = true }) const
         {
+            size_t name_size = params.full_tag ? sizeof(int8_t) + sizeof(uint16_t) + name->size() : 0;
             if (count() == 0)
-                return sizeof(uint16_t) + name->size() + tag_properties[tag_type].size;
+                return name_size + tag_properties[tag_type].size;
             else if (tag_type == tag_string)
-                return sizeof(uint16_t) + name->size() + sizeof(uint16_t) + count();
+                return name_size + sizeof(uint16_t) + count();
             else
-                return sizeof(uint16_t) + name->size() + sizeof(int32_t) + (count() * tag_properties[tag_type].size);
+                return name_size + sizeof(int32_t) + (count() * tag_properties[tag_type].size);
         }
 
     private:
@@ -264,7 +309,8 @@ namespace melon::nbt
         return prim_value;
     }
 
-    std::tuple<std::unique_ptr<char[], mem::pmr::generic_deleter<char[]>>, int32_t> inline
+    std::tuple<std::unique_ptr<char[], mem::pmr::generic_deleter<char[]>>, int32_t>
+    inline
 #ifdef __GNUC__
     __attribute__((always_inline))
 #endif
@@ -296,7 +342,8 @@ namespace melon::nbt
         return std::make_tuple(std::move(array_uptr), array_len);
     }
 
-    std::tuple<std::unique_ptr<char[], mem::pmr::array_deleter<char[]>>, uint16_t> inline
+    std::tuple<std::unique_ptr<char[], mem::pmr::array_deleter<char[]>>, uint16_t>
+    inline
 #ifdef __GNUC__
     __attribute__((always_inline))
 #endif

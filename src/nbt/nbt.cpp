@@ -7,6 +7,34 @@
 
 namespace melon::nbt
 {
+    tag_variant_t primitive_tag::get_generic()
+    {
+        switch (tag_type)
+        {
+            case tag_byte:
+                return std::reference_wrapper<tag_access_t<tag_byte>>(value.tag_byte);
+            case tag_short:
+                return std::reference_wrapper<tag_access_t<tag_short>>(value.tag_short);
+            case tag_int:
+                return std::reference_wrapper<tag_access_t<tag_int>>(value.tag_int);
+            case tag_long:
+                return std::reference_wrapper<tag_access_t<tag_long>>(value.tag_long);
+            case tag_float:
+                return std::reference_wrapper<tag_access_t<tag_float>>(value.tag_float);
+            case tag_double:
+                return std::reference_wrapper<tag_access_t<tag_double>>(value.tag_double);
+            case tag_string:
+                return std::string_view(value.tag_string, count_v);
+            case tag_byte_array:
+                return std::span(value.tag_byte_array, count_v);
+            case tag_int_array:
+                return std::span(value.tag_int_array, count_v);
+            case tag_long_array:
+                return std::span(value.tag_long_array, count_v);
+            default:
+                std::unreachable();
+        }
+    }
 
     void primitive_tag::to_snbt(std::string &out)
     {

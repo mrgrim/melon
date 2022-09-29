@@ -100,11 +100,11 @@ int main()
     parsed_nbt.insert<nbt::tag_long_array>("Test Long Deque Array", std::deque<int64_t>{ 25, 26, 27, 28, 29, 30 });
     parsed_nbt.insert<nbt::tag_byte_array>("Test Byte Set Array", std::set<int8_t>{ -1, -2, -3, -4, -5, -6 });
 
-    auto &level_compound = parsed_nbt.get<nbt::tag_compound>("Data").value().get();
+    auto &level_compound = parsed_nbt.find<nbt::tag_compound>("Data").value().get();
 
-    auto end_gateway_list_opt = parsed_nbt.get<nbt::tag_compound>("Data")
-                                          .get<nbt::tag_compound>("DragonFight")
-                                          .get<nbt::tag_list>("Gateways");
+    auto end_gateway_list_opt = parsed_nbt.find<nbt::tag_compound>("Data")
+                                          .find<nbt::tag_compound>("DragonFight")
+                                          .find<nbt::tag_list>("Gateways");
 
     if (end_gateway_list_opt)
         for (nbt::list &end_gateway_list = *end_gateway_list_opt; auto &gateway: nbt::list::range<nbt::tag_int>{ end_gateway_list })
@@ -112,9 +112,9 @@ int main()
 
     std::cout << std::endl;
 
-    auto &enabled_datapacks = parsed_nbt.get<nbt::tag_compound>("Data")
-                                        .get<nbt::tag_compound>("DataPacks")
-                                        .get<nbt::tag_list>("Enabled").value().get();
+    auto &enabled_datapacks = parsed_nbt.find<nbt::tag_compound>("Data")
+                                        .find<nbt::tag_compound>("DataPacks")
+                                        .find<nbt::tag_list>("Enabled").value().get();
 
     for (const auto pack_name: nbt::list::range<nbt::tag_string>{ enabled_datapacks })
         std::cout << pack_name << std::endl;
@@ -177,24 +177,70 @@ int main()
             }
         });
     });
+
     std::cout << *(my_compound.to_snbt()) << std::endl;
     std::cout << "my_compound size: " << my_compound.size() << std::endl;
 
-    auto &scheduled_events = parsed_nbt.get<nbt::tag_compound>("Data")
-                                       .get<nbt::tag_list>("ScheduledEvents").value().get();
+    {
+        auto &test_compound = my_compound.find<nbt::tag_compound>("Test Compound").value().get();
 
-    for (const auto event: nbt::list::range<nbt::tag_compound>{ scheduled_events })
-        std::cout << "Scheduled Event " << event->get<nbt::tag_string>("Name").value() << " at " << event->get<nbt::tag_long>("TriggerTime").value() << std::endl;
+        for (auto itr = test_compound.begin(); itr != test_compound.end();)
+        {
+            auto &&[name, tag_type, _] = *itr;
+            std::cout << "Iterated over tag \"" << name << "\" of type " << +tag_type << "." << std::endl;
+
+            if (name == "Test String List")
+            {
+                std::cout << "Erasing \"" << name << "\"." << std::endl;
+                itr = test_compound.erase(std::move(itr));
+            }
+            else
+                itr++;
+        }
+
+        if (test_compound.erase("Test String") > 0)
+        {
+            std::cout << "Find \"Test String\" by name and successfully deleted." << std::endl;
+        }
+    }
+
+    if (const auto &comp_result = my_compound.find("Test Compound", nbt::tag_compound))
+    {
+        auto &[ckey, ctype, ctag] = comp_result.value();
+        auto &test_compound       = std::get<nbt::tag_compound>(ctag).get();
+
+        if (const auto &float_result = test_compound.find("Test Float"))
+        {
+            auto &[fkey, ftype, ftag] = float_result.value();
+
+            if (ftype == nbt::tag_float)
+            {
+                auto &fvalue = std::get<nbt::tag_float>(ftag).get();
+
+                std::cout << "Found float value of \"" << fvalue << "\" with generic search. Changing to \"" << (1.0 / 137.0) << "\"." << std::endl;
+                fvalue = 1.0 / 137.0;
+            }
+        }
+    }
+
+    std::cout << *(my_compound.to_snbt()) << std::endl;
+    std::cout << "my_compound size: " << my_compound.size() << std::endl;
+
+    auto &scheduled_events = parsed_nbt.find<nbt::tag_compound>("Data")
+                                       .find<nbt::tag_list>("ScheduledEvents").value().get();
+
+    for (auto &&event: nbt::list::range<nbt::tag_compound>{ scheduled_events })
+        std::cout << "Scheduled Event " << event.find<nbt::tag_string>("Name").value() << " at " << event.find<nbt::tag_long>("TriggerTime").value() << std::endl;
 
     std::cout << "And a random repeat..." << std::endl;
     auto &event = scheduled_events.at<nbt::tag_compound>(std::rand() % scheduled_events.count);
-    std::cout << "Scheduled Event " << event.get<nbt::tag_string>("Name").value() << " at " << event.get<nbt::tag_long>("TriggerTime").value() << std::endl;
+    std::cout << "Scheduled Event " << event.find<nbt::tag_string>("Name").value() << " at " << event.find<nbt::tag_long>("TriggerTime").value() << std::endl;
 
     auto &end_gateway_list = (*end_gateway_list_opt).get();
     std::cout << end_gateway_list.at<nbt::tag_int>(2) << " " << enabled_datapacks.at<nbt::tag_string>(3) << " "
-              << scheduled_events.at<nbt::tag_compound>(1).get<nbt::tag_long>("TriggerTime").value() << std::endl;
+              << scheduled_events.at<nbt::tag_compound>(1).find<nbt::tag_long>("TriggerTime").value() << std::endl;
 
-    auto trader_ints = level_compound.get<nbt::tag_int_array>("WanderingTraderId").value();
+    auto trader_ints = level_compound.find<nbt::tag_int_array>("WanderingTraderId").value();
 
     std::cout << "Wandering Trader ID (" << trader_ints.size() << "): ";
     for (auto &id: trader_ints)

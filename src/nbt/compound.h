@@ -15,16 +15,15 @@
 #include "nbt.h"
 #include "unordered_dense.h"
 #include "util/concepts.h"
+#include "util/util.h"
 #include "mem/pmr.h"
 
-// TODO: Add compound iterator
-// TODO: Add compound tag and list item delete
-// TODO: Add runtime dynamic API
+// TODO: List item delete
 // TODO: Add binary serialization
 // TODO: Add SNBT parsing
 // TODO: Maybe undo some of the overbearing smart pointer usage in list
-// TODO: Size tracking for list tags
 // TODO: Lift debug PMR out of compound class
+// TODO: Region file support
 
 namespace melon::nbt
 {
@@ -32,6 +31,51 @@ namespace melon::nbt
 
     class compound
     {
+    public:
+        using allocator_type = std::pmr::polymorphic_allocator<std::byte>;
+        using tag_list_t = std::pmr::unordered_map<std::string_view, std::variant<compound *, list *, primitive_tag *>>;
+
+        // @formatter:off
+        class iterator
+        {
+            friend class compound;
+
+            tag_list_t::iterator itr;
+            using itr_value = tag_list_t::iterator::value_type;
+        public:
+            using value_type = std::tuple<std::string_view, tag_type_enum, tag_variant_t>;
+            using difference_type = int;
+            using iterator_category = std::forward_iterator_tag;
+
+            iterator() : itr() { };
+
+            explicit iterator(tag_list_t::iterator &&itr_in) : itr(std::move(itr_in)) { };
+
+            //const tag_prim_t<tag_type> *operator->() const { tag_prim_t<tag_type> ret; std::memcpy(&ret, &(ptr[index]->value)); };
+            value_type operator*() const { return fetch_value(*itr); };
+            auto &operator++() { itr++; return *this; };
+            auto operator++(int) { auto old = *this; ++(*this); return old; };
+
+            friend bool operator==(const iterator &lhs, const iterator &rhs) { return lhs.itr == rhs.itr; }
+
+        private:
+            static value_type fetch_value(itr_value &value_in)
+            {
+                if (std::holds_alternative<compound *>(value_in.second))
+                    return { std::string_view(value_in.first), tag_compound, std::reference_wrapper<compound>(*std::get<compound *>(value_in.second)) };
+                else if (std::holds_alternative<list *>(value_in.second))
+                    return { std::string_view(value_in.first), tag_list, std::reference_wrapper<list>(*std::get<list *>(value_in.second)) };
+                else if (std::holds_alternative<primitive_tag *>(value_in.second))
+                {
+                    auto prim_ptr = std::get<primitive_tag *>(value_in.second);
+                    return { std::string_view(value_in.first), prim_ptr->tag_type, prim_ptr->get_generic() };
+                }
+                else
+                    std::unreachable();
+            }
+        };
+        //@formatter:on
+
     private:
         struct insert_args : util::forced_named_init<insert_args>
         {
@@ -52,10 +96,10 @@ namespace melon::nbt
             public:
             template<tag_type_enum tag_type>
             requires std::is_same_v<Cont, compound>
-            chained_optional_refwrap<Ref, tag_cont_t<tag_type>> get(const std::string_view &tag_name)
+            chained_optional_refwrap<Ref, tag_cont_t<tag_type>> find(const std::string_view &tag_name)
             {
                 if (this->has_value())
-                    return this->value().get().template get<tag_type>(tag_name);
+                    return this->value().get().template find<tag_type>(tag_name);
                 else
                     return std::nullopt;
             }
@@ -63,9 +107,6 @@ namespace melon::nbt
         // @formatter:on
 
     public:
-        using allocator_type = std::pmr::polymorphic_allocator<std::byte>;
-        using tag_list_t = std::pmr::unordered_map<std::string_view, std::variant<compound *, list *, primitive_tag *>>;
-
         mem::pmr::unique_ptr<std::pmr::string> name;
 
         compound() = delete;
@@ -78,9 +119,15 @@ namespace melon::nbt
         // will take care of this automatically.
         explicit compound(std::unique_ptr<char[]> raw, size_t raw_size, std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
 
+        iterator begin()
+        { return iterator(tags.begin()); }
+
+        iterator end()
+        { return iterator(tags.end()); }
+
         template<tag_type_enum tag_type>
         requires is_nbt_container<tag_type>
-        [[nodiscard]] chained_optional_refwrap<std::reference_wrapper, tag_cont_t<tag_type>> get(const std::string_view &tag_name) noexcept
+        [[nodiscard]] chained_optional_refwrap<std::reference_wrapper, tag_cont_t<tag_type>> find(const std::string_view &tag_name) noexcept
         {
             auto itr = tags.find(tag_name);
 
@@ -92,7 +139,7 @@ namespace melon::nbt
 
         template<tag_type_enum tag_type>
         requires is_nbt_primitive<tag_type>
-        [[nodiscard]] std::optional<std::reference_wrapper<tag_prim_t<tag_type>>> get(const std::string_view &tag_name) noexcept
+        [[nodiscard]] std::optional<std::reference_wrapper<tag_prim_t<tag_type>>> find(const std::string_view &tag_name) noexcept
         {
             auto itr = tags.find(tag_name);
 
@@ -105,7 +152,7 @@ namespace melon::nbt
         template<tag_type_enum tag_type>
         requires is_nbt_array<tag_type>
         [[nodiscard]] std::optional<typename std::invoke_result<decltype(&primitive_tag::template get<tag_type>), primitive_tag *>::type>
-        get(const std::string_view &tag_name) noexcept
+        find(const std::string_view &tag_name) noexcept
         {
             auto itr = tags.find(tag_name);
 
@@ -115,19 +162,27 @@ namespace melon::nbt
                 return std::get<tag_cont_t<tag_type> *>(itr->second)->template get<tag_type>();
         }
 
+        std::optional<std::tuple<std::string_view, tag_type_enum, tag_variant_t>> find(const std::string_view &key, tag_type_enum type_requested = tag_end) noexcept;
+
         template<tag_type_enum tag_type>
         requires (tag_type == tag_compound)
-        std::optional<std::reference_wrapper<compound>> create(std::string_view tag_name, const std::function<void(compound & )> &builder = nullptr)
+        std::optional<std::reference_wrapper<compound>> create(std::string_view tag_name, const std::function<void(compound &)> &builder = nullptr)
         {
             if (tags.contains(tag_name)) return std::nullopt;
 
             auto container = mem::pmr::make_unique<compound>(pmr_rsrc, this, tag_name);
             if (builder) builder(*container);
 
-            this->adjust_size(container->size());
-
-            const auto &[_, success] = tags.insert(std::pair{ std::string_view(*(container->name)), container.get() });
-            if (!success) throw std::runtime_error("Failed to insert NBT compound.");
+            try
+            {
+                const auto &[_, success] = tags.insert(std::pair{ std::string_view(*(container->name)), container.get() });
+                if (!success) throw std::runtime_error("Failed to insert NBT compound.");
+            }
+            catch (...)
+            {
+                this->adjust_size(container->size() * -1);
+                throw;
+            }
 
             return *container.release();
         }
@@ -184,10 +239,14 @@ namespace melon::nbt
         void insert(const std::string_view tag_name, const C<V, N...> &values, insert_args args = { .overwrite = false })
         { insert_array_general<tag_type>(tag_name, values, args.overwrite); }
 
+        iterator erase(const iterator&& pos)
+        { return iterator(destroy_tag(pos.itr)); }
+        size_t erase(std::string_view &&key);
+
         void to_snbt(std::string &out);
         std::unique_ptr<std::string> to_snbt();
 
-        [[nodiscard]] auto size() const
+        [[nodiscard]] size_t size() const
         { return size_v; }
 
         compound(const compound &) = delete;
@@ -230,7 +289,7 @@ namespace melon::nbt
             this->adjust_size(tag_ptr->size());
 
             if constexpr (tag_type == tag_string)
-                tag_ptr->value.tag_string = array_ptr.get();
+                tag_ptr->value.tag_string     = array_ptr.get();
             if constexpr (tag_type == tag_byte_array)
                 tag_ptr->value.tag_byte_array = array_ptr.get();
             if constexpr (tag_type == tag_int_array)
@@ -258,6 +317,8 @@ namespace melon::nbt
         size_t   size_v   = 0;
         int64_t  max_size = -1;
     };
+
+    static_assert(std::forward_iterator<compound::iterator>);
 }
 
 #endif //MELON_NBT_COMPOUND_H

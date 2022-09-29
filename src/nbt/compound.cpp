@@ -52,7 +52,7 @@ namespace melon::nbt
             *name = std::string_view(itr, name_len);
 
             itr += name_len;
-            size_v += 3;
+            size_v += 3 + name_len;
 
             read(itr, raw.get() + raw_size);
         }
@@ -79,15 +79,17 @@ namespace melon::nbt
 
         if (depth > 512) [[unlikely]] throw std::runtime_error("NBT Depth exceeds 512.");
 
-        // TAG type + name length value + name length + END TAG type
-        this->adjust_size(sizeof(int8_t) + sizeof(uint16_t) + name_in.size() + sizeof(int8_t));
+        if (std::holds_alternative<list *>(parent_in))
+            this->adjust_size(sizeof(int8_t));
+        else
+            this->adjust_size(sizeof(int8_t) + sizeof(uint16_t) + name_in.size() + sizeof(int8_t));
     }
 
     compound::compound(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, mem::pmr::unique_ptr<std::pmr::string> name_in)
             : parent(parent_in),
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
               pmr_rsrc(top->pmr_rsrc),
-              name(std::move(name_in)),
+              name(name_in.get() != nullptr ? std::move(name_in) : mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, "")),
               tags(tag_list_t(pmr_rsrc))
     {
         std::visit([this](auto &&tag) {
@@ -96,6 +98,9 @@ namespace melon::nbt
         }, parent_in);
 
         if (depth > 512) [[unlikely]] throw std::runtime_error("NBT Depth exceeds 512.");
+
+        if (std::holds_alternative<compound *>(parent_in))
+            size_v += sizeof(uint16_t) + name->size() + sizeof(int8_t); // compound::read parent reads the compound tag type
 
         try
         {
@@ -111,8 +116,16 @@ namespace melon::nbt
     compound::~compound()
     {
         clear();
+
         if (this == top)
             std::cout << pmr_rsrc->get_records().size() << " Allocations left in the record for compound." << std::endl;
+
+        if (parent && std::holds_alternative<list *>(parent.value()))
+            adjust_size(sizeof(int8_t) * -1);
+        else
+            adjust_size((sizeof(int8_t) + sizeof(uint16_t) + name->size() + sizeof(int8_t)) * -1);
+
+        assert(size_v == 0);
     }
 
     char *compound::read(char *itr, const char *const itr_end)
@@ -190,6 +203,27 @@ namespace melon::nbt
         return itr;
     }
 
+    std::optional<std::tuple<std::string_view, tag_type_enum, tag_variant_t>> compound::find(const std::string_view &key, tag_type_enum type_requested) noexcept
+    {
+        auto itr = tags.find(key);
+        if (itr == tags.end()) return std::nullopt;
+
+        auto tag = std::visit([](auto tag) -> std::tuple<std::string_view, tag_type_enum, tag_variant_t> {
+            if constexpr (std::is_same_v<decltype(tag), compound *>)
+                return std::tuple{ std::string_view(*tag->name.get()), tag_compound, tag_variant_t{ std::reference_wrapper(*tag) }};
+            else if constexpr (std::is_same_v<decltype(tag), list *>)
+                return std::tuple{ std::string_view(*tag->name.get()), tag_list, tag_variant_t{ std::reference_wrapper(*tag) }};
+            else if constexpr (std::is_same_v<decltype(tag), primitive_tag *>)
+                return std::tuple{ std::string_view(*tag->name), tag->tag_type, tag->get_generic() };
+
+            std::unreachable();
+        }, itr->second);
+
+        if (type_requested != tag_end && type_requested != std::get<tag_type_enum>(tag)) return std::nullopt;
+
+        return tag;
+    }
+
     void compound::to_snbt(std::string &out)
     {
         if (name != nullptr && !name->empty())
@@ -252,12 +286,32 @@ namespace melon::nbt
         auto container = mem::pmr::make_unique<compound>(pmr_rsrc, this, "");
 
         if (builder) builder(*container);
-
         auto cont_ptr = container.get();
-        tags.push_back(std::move(container));
+
+        try
+        {
+            tags.push_back(std::move(container));
+        } catch (...)
+        {
+            adjust_size(container->size() * -1);
+            throw;
+        }
 
         count++;
         return *cont_ptr;
+    }
+
+    size_t compound::erase(std::string_view &&key)
+    {
+        auto itr = tags.find(key);
+
+        if (itr != tags.end())
+        {
+            erase(iterator(std::move(itr)));
+            return 1;
+        }
+        else
+            return 0;
     }
 
     void compound::adjust_size(int64_t by)
@@ -279,10 +333,11 @@ namespace melon::nbt
     {
         return std::visit([this, &itr](auto tag_ptr) -> auto {
             const auto &ret_itr = tags.erase(itr);
-            this->adjust_size(static_cast<int64_t>(tag_ptr->size()) * -1);
 
             if constexpr (std::is_same_v<decltype(tag_ptr), primitive_tag *>)
             {
+                this->adjust_size(static_cast<int64_t>(tag_ptr->size()) * -1);
+
                 if (tag_ptr->name != nullptr)
                 {
                     std::destroy_at(tag_ptr->name);

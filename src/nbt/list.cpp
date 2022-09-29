@@ -22,6 +22,11 @@ namespace melon::nbt
             depth    = tag->depth + 1;
             max_size = tag->max_size;
         }, parent_in);
+
+        if (std::holds_alternative<list *>(parent))
+            adjust_size(sizeof(int8_t) + sizeof(int32_t));
+        else
+            adjust_size(sizeof(int8_t) + sizeof(uint16_t) + name->size() + sizeof(int8_t) + sizeof(int32_t));
     }
 
     list::list(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, mem::pmr::unique_ptr<std::pmr::string> name_in, tag_type_enum tag_type_in)
@@ -40,6 +45,11 @@ namespace melon::nbt
             max_size = tag->max_size;
         }, parent_in);
 
+        if (std::holds_alternative<list *>(parent))
+            size_v += sizeof(int8_t); // list::read parent reads the list data type byte
+        else
+            size_v += sizeof(uint16_t) + name->size() + sizeof(int8_t) + sizeof(int8_t); // compound::read parent reads the list tag type and list data type byte
+
         try
         {
             *itr_in = read(*itr_in, itr_end);
@@ -54,16 +64,25 @@ namespace melon::nbt
     list::~list()
     {
         clean_primitives();
+
+        if (std::holds_alternative<list *>(parent))
+            adjust_size((sizeof(int8_t) + sizeof(int32_t)) * -1);
+        else
+            adjust_size((sizeof(int8_t) + sizeof(uint16_t) + name->size() + sizeof(int8_t) + sizeof(int32_t)) * -1);
+
+        std::cout << "Size of list after destruction of \"" << (name ? *name : "") << "\" (should be 0): " << this->size_v << std::endl;
     }
 
     void list::clean_primitives() noexcept
     {
-        if (tag_properties[type].category & (cat_array | cat_string))
+        if (tag_properties[type].category & (cat_array | cat_string | cat_primitive))
         {
             for (auto &tag : tags)
             {
                 auto &tag_ptr = std::get<mem::pmr::unique_ptr<primitive_tag>>(tag);
-                if (tag_ptr->value.generic_ptr != nullptr)
+                adjust_size(tag_ptr->size({ .full_tag = false }) * -1);
+
+                if (tag_properties[type].category & (cat_array | cat_string) && tag_ptr->value.generic_ptr != nullptr)
                     pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->count() * tag_properties[type].size + padding_size, tag_properties[type].size);
             }
         }
@@ -190,10 +209,14 @@ namespace melon::nbt
         auto container = mem::pmr::make_unique<list>(pmr_rsrc, this, tag_name, tag_type_in);
         if (builder) builder(*container);
 
-        this->adjust_size(container->size());
-
-        const auto &[_, success] = tags.insert(std::pair{ std::string_view(*(container->name)), container.get() });
-        if (!success) [[unlikely]] throw std::runtime_error("Failed to insert NBT list.");
+        try
+        {
+            const auto &[_, success] = tags.insert(std::pair{ std::string_view(*(container->name)), container.get() });
+            if (!success) [[unlikely]] throw std::runtime_error("Failed to insert NBT list.");
+        } catch (...) {
+            this->adjust_size(container->size() * -1);
+            throw;
+        }
 
         return *container.release();
     }
