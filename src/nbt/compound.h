@@ -21,7 +21,6 @@
 // TODO: List item delete
 // TODO: Add binary serialization
 // TODO: Add SNBT parsing
-// TODO: Maybe undo some of the overbearing smart pointer usage in list
 // TODO: Lift debug PMR out of compound class
 // TODO: Region file support
 

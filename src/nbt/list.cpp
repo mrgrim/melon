@@ -56,36 +56,55 @@ namespace melon::nbt
         }
         catch (...)
         {
-            clean_primitives();
+            clear();
             throw;
         }
     }
 
     list::~list()
     {
-        clean_primitives();
+        clear();
 
         if (std::holds_alternative<list *>(parent))
             adjust_size((sizeof(int8_t) + sizeof(int32_t)) * -1);
         else
             adjust_size((sizeof(int8_t) + sizeof(uint16_t) + name->size() + sizeof(int8_t) + sizeof(int32_t)) * -1);
 
-        std::cout << "Size of list after destruction of \"" << (name ? *name : "") << "\" (should be 0): " << this->size_v << std::endl;
+        assert(size_v == 0);
     }
 
-    void list::clean_primitives() noexcept
+    void list::clear()
     {
-        if (tag_properties[type].category & (cat_array | cat_string | cat_primitive))
-        {
-            for (auto &tag : tags)
+        auto clear_loop = [this]<class T>() {
+            for (auto &tag: tags)
             {
-                auto &tag_ptr = std::get<mem::pmr::unique_ptr<primitive_tag>>(tag);
-                adjust_size(tag_ptr->size({ .full_tag = false }) * -1);
+                auto tag_ptr = static_cast<T *>(tag);
 
-                if (tag_properties[type].category & (cat_array | cat_string) && tag_ptr->value.generic_ptr != nullptr)
-                    pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->count() * tag_properties[type].size + padding_size, tag_properties[type].size);
+                if constexpr (std::is_same_v<T, primitive_tag>)
+                {
+                    adjust_size(tag_ptr->size({ .full_tag = false }) * -1);
+
+                    if (tag_ptr->name != nullptr)
+                    {
+                        std::destroy_at(tag_ptr->name);
+                        pmr_rsrc->deallocate(tag_ptr->name, sizeof(std::remove_pointer_t<decltype(tag_ptr->name)>), alignof(std::remove_pointer_t<decltype(tag_ptr->name)>));
+                    }
+
+                    if (tag_properties[type].category & (cat_array | cat_string) && tag_ptr->value.generic_ptr != nullptr)
+                        pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->count() * tag_properties[type].size + padding_size, tag_properties[type].size);
+                }
+
+                std::destroy_at(tag_ptr);
+                pmr_rsrc->deallocate(tag_ptr, sizeof(T), alignof(T));
             }
-        }
+        };
+
+        if (tag_properties[type].category & (cat_string | cat_array | cat_primitive))
+            clear_loop.template operator()<primitive_tag>();
+        else if (type == tag_list)
+            clear_loop.template operator()<list>();
+        else if (type == tag_compound)
+            clear_loop.template operator()<compound>();
     }
 
     char *list::read(char *itr, const char *const itr_end)
@@ -111,7 +130,7 @@ namespace melon::nbt
                     auto list_type = static_cast<tag_type_enum>(*itr++);
                     if (static_cast<uint8_t>(list_type) >= tag_properties.size()) [[unlikely]] throw std::runtime_error("Invalid NBT Tag Type.");
 
-                    tags.push_back(mem::pmr::make_unique<list>(pmr_rsrc, &itr, itr_end, this, mem::pmr::make_empty_unique<std::pmr::string>(pmr_rsrc), list_type));
+                    tags.push_back(mem::pmr::make_obj_using_pmr<list>(pmr_rsrc, &itr, itr_end, this, mem::pmr::make_empty_unique<std::pmr::string>(pmr_rsrc), list_type));
                 }
             }
             else if (type == tag_compound)
@@ -121,7 +140,7 @@ namespace melon::nbt
                     if ((itr + sizeof(tag_type_enum) + padding_size) >= itr_end)
                         [[unlikely]] throw std::runtime_error("Attempt to read past buffer while parsing binary NBT data.");
 
-                    tags.push_back(mem::pmr::make_unique<compound>(pmr_rsrc, &itr, itr_end, this, mem::pmr::make_empty_unique<std::pmr::string>(pmr_rsrc)));
+                    tags.push_back(mem::pmr::make_obj_using_pmr<compound>(pmr_rsrc, &itr, itr_end, this, mem::pmr::make_empty_unique<std::pmr::string>(pmr_rsrc)));
                 }
             }
         }
@@ -132,7 +151,7 @@ namespace melon::nbt
                 if ((itr + tag_properties[type].size + padding_size) >= itr_end)
                     [[unlikely]] throw std::runtime_error("Attempt to read past buffer while parsing binary NBT data.");
 
-                tags.push_back(mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type, read_tag_primitive(&itr, type)));
+                tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type, read_tag_primitive(&itr, type)));
             }
         }
         else if (tag_properties[type].category & (cat_array | cat_string))
@@ -142,7 +161,7 @@ namespace melon::nbt
                 for (int32_t index = 0; index < count; index++)
                 {
                     auto [str_ptr, str_len] = read_tag_string(&itr, itr_end, pmr_rsrc);
-                    tags.push_back(mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type, std::bit_cast<uint64_t>(str_ptr.get()), nullptr, static_cast<size_t>(str_len)));
+                    tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type, std::bit_cast<uint64_t>(str_ptr.get()), nullptr, static_cast<size_t>(str_len)));
                     static_cast<void>(str_ptr.release());
                 }
             }
@@ -153,7 +172,7 @@ namespace melon::nbt
                     auto [array_ptr, array_len] = read_tag_array(&itr, itr_end, type, pmr_rsrc);
                     if (array_len < 0) [[unlikely]] throw std::runtime_error("Found array with negative length while parsing binary NBT data.");
 
-                    tags.push_back(mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type, std::bit_cast<uint64_t>(array_ptr.get()), nullptr, static_cast<size_t>(array_len)));
+                    tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type, std::bit_cast<uint64_t>(array_ptr.get()), nullptr, static_cast<size_t>(array_len)));
                     static_cast<void>(array_ptr.release());
                 }
             }
@@ -176,9 +195,9 @@ namespace melon::nbt
         if (count > 0 && type != tag_end)
         {
             auto process_entries = [&out]<typename T>(tag_list_t &vec) {
-                for (auto &tag : vec)
+                for (auto &tag: vec)
                 {
-                    auto &entry = std::get<mem::pmr::unique_ptr<T>>(tag);
+                    auto entry = static_cast<T *>(tag);
                     if (entry->name != nullptr && !entry->name->empty()) [[unlikely]] throw std::runtime_error("Unexpected named tag in NBT list.");
 
                     entry->to_snbt(out);
@@ -199,7 +218,7 @@ namespace melon::nbt
             out.push_back(']');
     }
 
-    // Circular dependency hell
+// Circular dependency hell
     template<>
     std::optional<std::reference_wrapper<list>> compound::create<tag_list>(std::string_view tag_name, tag_type_enum tag_type_in, const std::function<void(list &)> &builder)
     {
@@ -213,7 +232,8 @@ namespace melon::nbt
         {
             const auto &[_, success] = tags.insert(std::pair{ std::string_view(*(container->name)), container.get() });
             if (!success) [[unlikely]] throw std::runtime_error("Failed to insert NBT list.");
-        } catch (...) {
+        } catch (...)
+        {
             this->adjust_size(container->size() * -1);
             throw;
         }
@@ -232,4 +252,5 @@ namespace melon::nbt
         // Only adjust size after all recursive checks to allow strong exception guarantee.
         size_v += by;
     }
+
 }

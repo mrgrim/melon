@@ -290,7 +290,7 @@ namespace melon::nbt
 
         try
         {
-            tags.push_back(std::move(container));
+            tags.push_back(static_cast<void *>(container.get()));
         } catch (...)
         {
             adjust_size(container->size() * -1);
@@ -298,6 +298,7 @@ namespace melon::nbt
         }
 
         count++;
+        static_cast<void>(container.release());
         return *cont_ptr;
     }
 
@@ -344,10 +345,9 @@ namespace melon::nbt
                     pmr_rsrc->deallocate(tag_ptr->name, sizeof(std::remove_pointer_t<decltype(tag_ptr->name)>), alignof(std::remove_pointer_t<decltype(tag_ptr->name)>));
                 }
 
-                if (tag_properties[tag_ptr->tag_type].category & (cat_array | cat_string))
-                    if (tag_ptr->value.generic_ptr != nullptr)
-                        pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->count() * tag_properties[tag_ptr->tag_type].size + padding_size,
-                                             tag_properties[tag_ptr->tag_type].size);
+                if (tag_properties[tag_ptr->tag_type].category & (cat_array | cat_string) && tag_ptr->value.generic_ptr != nullptr)
+                    pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->count() * tag_properties[tag_ptr->tag_type].size + padding_size,
+                                         tag_properties[tag_ptr->tag_type].size);
             }
 
             std::destroy_at(tag_ptr);
