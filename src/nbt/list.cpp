@@ -19,14 +19,14 @@ namespace melon::nbt
               tags(tag_list_t(pmr_rsrc))
     {
         std::visit([this](auto &&tag) {
-            depth    = tag->depth + 1;
-            max_size = tag->max_size;
+            depth     = tag->depth + 1;
+            max_bytes = tag->max_bytes;
         }, parent_in);
 
         if (std::holds_alternative<list *>(parent))
-            adjust_size(sizeof(int8_t) + sizeof(int32_t));
+            adjust_byte_count(sizeof(int8_t) + sizeof(int32_t));
         else
-            adjust_size(sizeof(int8_t) + sizeof(uint16_t) + name->size() + sizeof(int8_t) + sizeof(int32_t));
+            adjust_byte_count(sizeof(int8_t) + sizeof(uint16_t) + name->size() + sizeof(int8_t) + sizeof(int32_t));
     }
 
     list::list(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, mem::pmr::unique_ptr<std::pmr::string> name_in, tag_type_enum tag_type_in)
@@ -41,14 +41,14 @@ namespace melon::nbt
             throw std::runtime_error("NBT Depth exceeds 512.");
 
         std::visit([this](auto &&tag) {
-            depth    = tag->depth + 1;
-            max_size = tag->max_size;
+            depth     = tag->depth + 1;
+            max_bytes = tag->max_bytes;
         }, parent_in);
 
         if (std::holds_alternative<list *>(parent))
-            size_v += sizeof(int8_t); // list::read parent reads the list data type byte
+            byte_count_v += sizeof(int8_t); // list::read parent reads the list data type byte
         else
-            size_v += sizeof(uint16_t) + name->size() + sizeof(int8_t) + sizeof(int8_t); // compound::read parent reads the list tag type and list data type byte
+            byte_count_v += sizeof(uint16_t) + name->size() + sizeof(int8_t) + sizeof(int8_t); // compound::read parent reads the list tag type and list data type byte
 
         try
         {
@@ -66,23 +66,84 @@ namespace melon::nbt
         clear();
 
         if (std::holds_alternative<list *>(parent))
-            adjust_size((sizeof(int8_t) + sizeof(int32_t)) * -1);
+            adjust_byte_count((sizeof(int8_t) + sizeof(int32_t)) * -1);
         else
-            adjust_size((sizeof(int8_t) + sizeof(uint16_t) + name->size() + sizeof(int8_t) + sizeof(int32_t)) * -1);
+            adjust_byte_count((sizeof(int8_t) + sizeof(uint16_t) + name->size() + sizeof(int8_t) + sizeof(int32_t)) * -1);
 
-        assert(size_v == 0);
+        assert(byte_count_v == 0);
+    }
+
+    uint16_t list::get_tree_depth()
+    {
+        uint16_t ret = depth;
+        uint16_t child_depth;
+
+        if (type == tag_list)
+        {
+            for (const auto &itr: tags)
+                if ((child_depth = static_cast<list *>(itr)->get_tree_depth()) > ret) ret = child_depth;
+        }
+        else if (type == tag_compound)
+        {
+            for (const auto &itr: tags)
+                if ((child_depth = static_cast<compound *>(itr)->get_tree_depth()) > ret) ret = child_depth;
+        }
+
+        return ret;
+    }
+
+    void list::change_properties(container_property_args props)
+    {
+        if (props.new_parent)
+        {
+            parent = props.new_parent.value();
+            props.new_parent = std::nullopt;
+        }
+
+        if (props.new_depth || props.new_max_bytes || props.new_top)
+        {
+            if (props.new_depth)
+            {
+                depth = props.new_depth.value_or(depth);
+                props.new_depth = depth + 1;
+            }
+
+            max_bytes = props.new_max_bytes.value_or(max_bytes);
+            top       = props.new_top.value_or(top);
+
+            if (type == tag_list)
+            {
+                for (const auto &itr: tags)
+                    static_cast<list *>(itr)->change_properties(props);
+            }
+            else if (type == tag_compound)
+            {
+                for (const auto &itr: tags)
+                    static_cast<compound *>(itr)->change_properties(props);
+            }
+        }
     }
 
     void list::clear()
     {
-        auto clear_loop = [this]<class T>() {
-            for (auto &tag: tags)
+        erase(begin(), end());
+    }
+
+    list::generic_iterator list::erase(const generic_iterator& pos)
+    {
+        return erase(pos, pos + 1);
+    }
+
+    list::generic_iterator list::erase(const generic_iterator& first, const generic_iterator& last)
+    {
+        auto clear_loop = [this, first, last]<class T>() {
+            for (auto itr = first; itr != last; itr++)
             {
-                auto tag_ptr = static_cast<T *>(tag);
+                auto tag_ptr = static_cast<T *>(itr.fetch_raw_ptr());
 
                 if constexpr (std::is_same_v<T, primitive_tag>)
                 {
-                    adjust_size(tag_ptr->size({ .full_tag = false }) * -1);
+                    adjust_byte_count(tag_ptr->bytes({ .full_tag = false }) * -1);
 
                     if (tag_ptr->name != nullptr)
                     {
@@ -91,20 +152,36 @@ namespace melon::nbt
                     }
 
                     if (tag_properties[type].category & (cat_array | cat_string) && tag_ptr->value.generic_ptr != nullptr)
-                        pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->count() * tag_properties[type].size + padding_size, tag_properties[type].size);
+                        pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->size() * tag_properties[type].size + padding_size, tag_properties[type].size);
                 }
 
                 std::destroy_at(tag_ptr);
                 pmr_rsrc->deallocate(tag_ptr, sizeof(T), alignof(T));
+                count--;
             }
+
+            return generic_iterator(tags.erase(first.itr, last.itr), this);
         };
 
-        if (tag_properties[type].category & (cat_string | cat_array | cat_primitive))
-            clear_loop.template operator()<primitive_tag>();
-        else if (type == tag_list)
-            clear_loop.template operator()<list>();
+        if (type == tag_list)
+            return clear_loop.template operator()<list>();
         else if (type == tag_compound)
-            clear_loop.template operator()<compound>();
+            return clear_loop.template operator()<compound>();
+        else
+            return clear_loop.template operator()<primitive_tag>();
+    }
+
+    tag_variant_t list::at(int idx)
+    {
+        if (type == tag_compound)
+            return std::reference_wrapper<compound>(*static_cast<compound *>(tags.at(idx)));
+        else if (type == tag_list)
+            return std::reference_wrapper<list>(*static_cast<list *>(tags.at(idx)));
+        else
+        {
+            auto prim_ptr = static_cast<primitive_tag *>(tags.at(idx));
+            return prim_ptr->get_generic();
+        }
     }
 
     char *list::read(char *itr, const char *const itr_end)
@@ -178,7 +255,7 @@ namespace melon::nbt
             }
         }
 
-        size_v += itr - itr_start;
+        byte_count_v += itr - itr_start;
         return itr;
     }
 
@@ -218,7 +295,7 @@ namespace melon::nbt
             out.push_back(']');
     }
 
-// Circular dependency hell
+    // Circular dependency hell
     template<>
     std::optional<std::reference_wrapper<list>> compound::create<tag_list>(std::string_view tag_name, tag_type_enum tag_type_in, const std::function<void(list &)> &builder)
     {
@@ -226,31 +303,31 @@ namespace melon::nbt
         if (tag_type_in == tag_end) throw std::runtime_error("Attempted to create NBT list with no type.");
 
         auto container = mem::pmr::make_unique<list>(pmr_rsrc, this, tag_name, tag_type_in);
-        if (builder) builder(*container);
 
         try
         {
+            if (builder) builder(*container);
             const auto &[_, success] = tags.insert(std::pair{ std::string_view(*(container->name)), container.get() });
             if (!success) [[unlikely]] throw std::runtime_error("Failed to insert NBT list.");
         } catch (...)
         {
-            this->adjust_size(container->size() * -1);
+            this->adjust_byte_count(container->bytes() * -1);
             throw;
         }
 
         return *container.release();
     }
 
-    void list::adjust_size(int64_t by)
+    void list::adjust_byte_count(int64_t by)
     {
-        if (max_size > -1 && by > -1 && (size_v + by) > static_cast<uint64_t>(max_size)) [[unlikely]] throw std::runtime_error("NBT compound grew too large.");
+        if (max_bytes > -1 && by > -1 && (byte_count_v + by) > static_cast<uint64_t>(max_bytes)) [[unlikely]] throw std::runtime_error("NBT compound grew too large.");
 
         std::visit([by](auto &&tag) {
-            tag->adjust_size(by);
+            tag->adjust_byte_count(by);
         }, parent);
 
         // Only adjust size after all recursive checks to allow strong exception guarantee.
-        size_v += by;
+        byte_count_v += by;
     }
 
 }

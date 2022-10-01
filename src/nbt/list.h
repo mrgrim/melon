@@ -9,6 +9,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <memory>
 #include <memory_resource>
@@ -28,6 +29,65 @@ namespace melon::nbt
         using tag_list_t = std::pmr::vector<void *>;
 
         // @formatter:off
+        class generic_iterator
+        {
+            friend class list;
+
+            tag_list_t::iterator itr;
+            list *container;
+        public:
+            using value_type = tag_variant_t;
+            using difference_type = int;
+            using iterator_category = std::random_access_iterator_tag;
+
+            generic_iterator() : itr(), container(nullptr) { };
+
+            explicit generic_iterator(tag_list_t::iterator &itr_in, list *container_in) : itr(itr_in), container(container_in) { };
+            explicit generic_iterator(tag_list_t::iterator &&itr_in, list *container_in) : itr(std::move(itr_in)), container(container_in) { };
+
+            tag_variant_t operator*() const
+            { return fetch_value(*itr); }
+            tag_variant_t operator[](int idx) const
+            { return fetch_value(itr[idx]); }
+
+            auto &operator++() { itr++; return *this; };
+            auto operator++(int)& { auto old = *this; ++(*this); return old; };
+            auto &operator--() { itr--; return *this; };
+            auto operator--(int)& { auto old = *this; --(*this); return old; };
+            auto &operator+=(int diff) { itr += diff; return *this; };
+            auto &operator-=(int diff) { itr -= diff; return *this; };
+
+            friend std::strong_ordering operator<=>(const generic_iterator &lhs, const generic_iterator &rhs) { return lhs.itr <=> rhs.itr; }
+            friend bool operator==(const generic_iterator &lhs, const generic_iterator &rhs) { return (lhs.itr == rhs.itr); }
+
+            friend int operator-(const generic_iterator &lhs, const generic_iterator &rhs) { return rhs.itr - lhs.itr; };
+            friend generic_iterator operator+(const generic_iterator &itr_in, int diff) { return generic_iterator(itr_in.itr + diff, itr_in.container); };
+            friend generic_iterator operator-(const generic_iterator &itr_in, int diff) { return generic_iterator(itr_in.itr - diff, itr_in.container); };
+            friend generic_iterator operator+(int diff, const generic_iterator &itr_in) { return itr_in + diff; };
+
+        private:
+            void *fetch_raw_ptr()
+            { return *itr; }
+
+            value_type fetch_value(void *value_in) const
+            {
+                if (container != nullptr)
+                {
+                    if (container->type == tag_compound)
+                        return std::reference_wrapper<compound>(*static_cast<compound *>(value_in));
+                    else if (container->type == tag_list)
+                        return std::reference_wrapper<list>(*static_cast<list *>(value_in));
+                    else
+                    {
+                        auto prim_ptr = static_cast<primitive_tag *>(value_in);
+                        return prim_ptr->get_generic();
+                    }
+                }
+
+                return std::monostate();
+            }
+        };
+
         template<tag_type_enum tag_type>
         requires (tag_type != tag_end)
         class iterator
@@ -35,23 +95,16 @@ namespace melon::nbt
             friend class list;
 
             tag_list_t::iterator itr;
-
-            tag_access_t<tag_type> &fetch_non_array_value(void *ptr) const
-            {
-                if constexpr (tag_properties[tag_type].category & (cat_compound | cat_list))
-                    return *static_cast<tag_cont_t<tag_type> *>(ptr);
-                else
-                    return static_cast<tag_cont_t<tag_type> *>(ptr)->template get<tag_type>();
-            }
-
+            list *container;
         public:
             using value_type = tag_access_t<tag_type>;
             using difference_type = int;
             using iterator_category = std::random_access_iterator_tag;
 
-            iterator() : itr() { };
+            iterator() : itr(), container(nullptr) { };
 
-            explicit iterator(tag_list_t::iterator &&itr_in) : itr(std::move(itr_in)) { };
+            explicit iterator(tag_list_t::iterator &itr_in, list *container_in) : itr(itr_in), container(container_in) { };
+            explicit iterator(tag_list_t::iterator &&itr_in, list *container_in) : itr(std::move(itr_in)), container(container_in) { };
 
             tag_access_t<tag_type> &operator*() const requires is_nbt_primitive<tag_type> || is_nbt_container<tag_type>
             { return fetch_non_array_value(*itr); }
@@ -74,10 +127,21 @@ namespace melon::nbt
             friend std::strong_ordering operator<=>(const iterator<tag_type> &lhs, const iterator<tag_type> &rhs) { return lhs.itr <=> rhs.itr; }
             friend bool operator==(const iterator<tag_type> &lhs, const iterator<tag_type> &rhs) { return (lhs.itr == rhs.itr); }
 
-            friend int operator-(iterator<tag_type> lhs, iterator<tag_type> rhs) { return rhs.itr - lhs.itr; };
-            friend iterator<tag_type> operator+(iterator<tag_type> itr_in, int diff) { return iterator<tag_type>(itr_in + diff); };
-            friend iterator<tag_type> operator-(iterator<tag_type> itr_in, int diff) { return iterator<tag_type>(itr_in - diff); };
-            friend iterator<tag_type> operator+(int diff, iterator<tag_type> itr_in) { return itr_in + diff; };
+            friend int operator-(const iterator<tag_type> &lhs, const iterator<tag_type> &rhs) { return rhs.itr - lhs.itr; };
+            friend iterator<tag_type> operator+(const iterator<tag_type> &itr_in, int diff) { return iterator<tag_type>(itr_in.itr + diff); };
+            friend iterator<tag_type> operator-(const iterator<tag_type> &itr_in, int diff) { return iterator<tag_type>(itr_in.itr - diff); };
+            friend iterator<tag_type> operator+(int diff, const iterator<tag_type> &itr_in) { return itr_in + diff; };
+
+            list::generic_iterator to_generic() { return list::generic_iterator(itr, container); }
+
+        private:
+            tag_access_t<tag_type> &fetch_non_array_value(void *ptr) const
+            {
+                if constexpr (tag_properties[tag_type].category & (cat_compound | cat_list))
+                    return *static_cast<tag_cont_t<tag_type> *>(ptr);
+                else
+                    return static_cast<tag_cont_t<tag_type> *>(ptr)->template get<tag_type>();
+            }
         };
         //@formatter:on
 
@@ -107,15 +171,20 @@ namespace melon::nbt
         iterator<tag_type> begin()
         {
             if (type != tag_type) [[unlikely]] throw std::runtime_error("Attempt to create iterator of invalid NBT list type.");
-            return iterator<tag_type>(tags.begin());
+            return iterator<tag_type>(std::move(tags.begin()), this);
         }
 
         template<tag_type_enum tag_type> requires (tag_type != tag_end)
         iterator<tag_type> end()
         {
             if (type != tag_type) [[unlikely]] throw std::runtime_error("Attempt to create iterator of invalid NBT list type.");
-            return iterator<tag_type>(tags.end());
+            return iterator<tag_type>(std::move(tags.end()), this);
         }
+
+        generic_iterator begin()
+        { return generic_iterator(std::move(tags.begin()), this); }
+        generic_iterator end()
+        { return generic_iterator(std::move(tags.end()), this); }
 
         template<tag_type_enum tag_type>
         requires is_nbt_container<tag_type>
@@ -143,41 +212,50 @@ namespace melon::nbt
         }
         // @formatter:on
 
+        tag_variant_t at(int idx);
+
         // It's in compound.cpp :sob:
         template<tag_type_enum tag_type>
         requires (tag_type == tag_compound)
-        std::optional<std::reference_wrapper<compound>> push(const std::function<void(compound &)> &builder = nullptr);
+        std::optional<std::reference_wrapper<compound>> insert(const generic_iterator &itr, const std::function<void(compound &)> &builder = nullptr);
+
+        template<tag_type_enum tag_type>
+        requires (tag_type == tag_compound)
+        std::optional<std::reference_wrapper<compound>> push(std::function<void(compound &)> &&builder = nullptr)
+        { return insert<tag_type>(end(), std::forward<std::function<void(compound &)>>(builder)); }
 
         template<tag_type_enum tag_type>
         requires (tag_type == tag_list)
-        std::optional<std::reference_wrapper<list>> push(tag_type_enum tag_type_in, const std::function<void(list &)> &builder = nullptr)
+        std::optional<std::reference_wrapper<list>> insert(const generic_iterator &itr, tag_type_enum tag_type_in, const std::function<void(list &)> &builder = nullptr)
         {
-            auto container = mem::pmr::make_unique<list>(pmr_rsrc, this, "", tag_type_in);
             if (tag_type_in == tag_end) throw std::runtime_error("Attempted to create NBT list with no type.");
-
-            if (builder) builder(*container);
-            auto cont_ptr = container.get();
+            auto container = mem::pmr::make_unique<list>(pmr_rsrc, this, "", tag_type_in);
 
             try
             {
-                tags.push_back(static_cast<void *>(container.get()));
+                if (builder) builder(*container);
+                tags.insert(itr.itr, static_cast<void *>(container.get()));
             } catch (...)
             {
-                adjust_size(container->size() * -1);
+                adjust_byte_count(container->bytes() * -1);
                 throw;
             }
 
             count++;
-            static_cast<void>(container.release());
-            return *cont_ptr;
+            return *container.release();
         }
+
+        template<tag_type_enum tag_type>
+        requires (tag_type == tag_list)
+        std::optional<std::reference_wrapper<list>> push(tag_type_enum tag_type_in, std::function<void(list &)> &&builder = nullptr)
+        { return insert<tag_type>(end(), tag_type_in, std::forward<std::function<void(list &)>>(builder)); }
 
         template<tag_type_enum tag_type, class V = tag_prim_t<tag_type>>
         requires is_nbt_primitive<tag_type> && is_nbt_type_match<V, tag_type>
-        void push(V value)
+        void insert(const generic_iterator &itr, V &&value)
         {
             auto tag_ptr = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type);
-            adjust_size(tag_ptr->size({ .full_tag = false }));
+            adjust_byte_count(tag_ptr->bytes({ .full_tag = false }));
 
             if constexpr (tag_type == tag_byte)
                 tag_ptr->value.tag_byte = value;
@@ -192,45 +270,72 @@ namespace melon::nbt
             else if constexpr (tag_type == tag_double)
                 tag_ptr->value.tag_double = value;
 
-            tags.push_back(static_cast<tag_cont_t<tag_type> *>(tag_ptr.get()));
+            tags.insert(itr.itr, static_cast<tag_cont_t<tag_type> *>(tag_ptr.get()));
             static_cast<void>(tag_ptr.release());
+            count++;
+        }
+
+        template<tag_type_enum tag_type, class V = tag_prim_t<tag_type>>
+        requires is_nbt_primitive<tag_type> && is_nbt_type_match<V, tag_type>
+        void push(V &&value)
+        { insert<tag_type>(end(), std::forward<V>(value)); }
+
+        template<tag_type_enum tag_type>
+        requires (tag_type == tag_string)
+        void insert(const generic_iterator &itr, const std::string_view &str_in)
+        {
+            if (tag_type != this->type) throw std::runtime_error("Attempt to push value of wrong type to NBT list.");
+            push_array_general<char>(itr, str_in);
             count++;
         }
 
         template<tag_type_enum tag_type>
         requires (tag_type == tag_string)
-        void push(const std::string_view &str_in)
+        void push(std::string_view &&str_in)
+        { insert<tag_type>(end(), std::forward<std::string_view>(str_in)); }
+
+        template<tag_type_enum tag_type, class V = std::remove_pointer_t<tag_prim_t<tag_type>>, std::size_t N>
+        requires is_nbt_array<tag_type> && is_nbt_type_match<std::add_pointer_t<V>, tag_type>
+        void insert(const generic_iterator &itr, const std::array<V, N> &values)
         {
             if (tag_type != this->type) throw std::runtime_error("Attempt to push value of wrong type to NBT list.");
-            push_array_general<char>(str_in);
+            push_array_general<V>(itr, values);
             count++;
         }
 
         template<tag_type_enum tag_type, class V = std::remove_pointer_t<tag_prim_t<tag_type>>, std::size_t N>
         requires is_nbt_array<tag_type> && is_nbt_type_match<std::add_pointer_t<V>, tag_type>
-        void push(const std::array<V, N> &values)
+        void push(std::array<V, N> &&values)
+        { insert<tag_type>(end(), std::forward<std::array<V, N>>(values)); }
+
+        template<tag_type_enum tag_type, template<class, class...> class C = std::initializer_list, class V = std::remove_pointer_t<tag_prim_t<tag_type>>, class... N>
+        requires is_nbt_array<tag_type> && is_nbt_type_match<std::add_pointer_t<V>, tag_type> && util::is_simple_iterable<C<V, N...>, V>
+        void insert(const generic_iterator &itr, const C<V, N...> &values)
         {
             if (tag_type != this->type) throw std::runtime_error("Attempt to push value of wrong type to NBT list.");
-            push_array_general<V>(values);
+            push_array_general<V>(itr, values);
             count++;
         }
 
         template<tag_type_enum tag_type, template<class, class...> class C = std::initializer_list, class V = std::remove_pointer_t<tag_prim_t<tag_type>>, class... N>
         requires is_nbt_array<tag_type> && is_nbt_type_match<std::add_pointer_t<V>, tag_type> && util::is_simple_iterable<C<V, N...>, V>
-        void push(const C<V, N...> &values)
-        {
-            if (tag_type != this->type) throw std::runtime_error("Attempt to push value of wrong type to NBT list.");
-            push_array_general<V>(values);
-            count++;
-        }
+        void push(C<V, N...> &&values)
+        { insert<tag_type>(end(), std::forward<C<V, N...>>(values)); }
 
         void reserve(size_t count_in)
         { tags.reserve(count_in); }
 
+        [[nodiscard]] size_t bytes() const
+        { return byte_count_v; }
+
         [[nodiscard]] size_t size() const
-        { return size_v; }
+        { return tags.size(); }
+
+        generic_iterator erase(const generic_iterator &pos);
+        generic_iterator erase(const generic_iterator &first, const generic_iterator &last);
 
         void clear();
+        uint16_t get_tree_depth();
 
         template<tag_type_enum tag_type>
         struct range
@@ -256,33 +361,35 @@ namespace melon::nbt
         explicit list(char **itr_in, const char *itr_end, std::variant<compound *, list *>, mem::pmr::unique_ptr<std::pmr::string> name_in, tag_type_enum tag_type_in);
 
         char *read(char *itr, const char *itr_end);
-        void adjust_size(int64_t by);
-        void clean_primitives() noexcept;
+        void adjust_byte_count(int64_t by);
+        void change_properties(container_property_args props);
 
         template<typename V>
-        void push_array_general(const auto &values)
+        void push_array_general(const generic_iterator &itr, const auto &values)
         {
             auto array_ptr = mem::pmr::make_unique<V[]>(pmr_rsrc, values.size() + (padding_size / sizeof(V)));
             auto tag_ptr   = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type);
 
-            tag_ptr->change_count(values.size());
-            adjust_size(tag_ptr->size({ .full_tag = false }));
+            tag_ptr->set_size(values.size());
+            adjust_byte_count(tag_ptr->bytes({ .full_tag = false }));
 
             for (std::size_t idx = 0; const auto &value: values)
                 array_ptr[idx++] = value;
 
             tag_ptr->value.generic_ptr = static_cast<void *>(array_ptr.get());
-            tags.push_back(static_cast<void *>(tag_ptr.get()));
+            tags.insert(itr.itr, static_cast<void *>(tag_ptr.get()));
             static_cast<void>(array_ptr.release());
             static_cast<void>(tag_ptr.release());
         }
 
         tag_list_t tags;
 
-        uint16_t depth    = 0;
-        size_t   size_v   = 0;
-        int64_t  max_size = -1;
+        uint16_t depth        = 0;
+        size_t   byte_count_v = 0;
+        int64_t  max_bytes    = -1;
     };
+
+    static_assert(std::random_access_iterator<list::generic_iterator>);
 
     static_assert(std::random_access_iterator<list::iterator<tag_compound>>);
     static_assert(std::random_access_iterator<list::iterator<tag_list>>);

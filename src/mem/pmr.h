@@ -255,7 +255,10 @@ namespace melon::mem::pmr
 
         [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource &other) const noexcept override
         {
-            return (this == &other || upstream_resource == &other);
+            auto other_cast = dynamic_cast<const recording_mem_resource *>(&other);
+            auto other_upstream = other_cast ? other_cast->upstream_resource : nullptr;
+
+            return (this == &other || upstream_resource == other_upstream);
         }
 
     private:

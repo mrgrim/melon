@@ -15,21 +15,21 @@
 
 namespace melon::nbt
 {
-    compound::compound(std::string_view name_in, int64_t max_size_in, std::pmr::memory_resource *pmr_rsrc_in)
+    compound::compound(std::string_view name_in, int64_t max_bytes_in, std::pmr::memory_resource *pmr_rsrc_in)
             : parent(std::nullopt),
               top(this),
               pmr_rsrc(new mem::pmr::recording_mem_resource(pmr_rsrc_in, true)),
               name(mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, name_in)),
               tags(tag_list_t(pmr_rsrc)),
               depth(1),
-              max_size(max_size_in)
+              max_bytes(max_bytes_in)
     {
         if (name_in.size() > std::numeric_limits<uint16_t>::max())
             [[unlikely]]
                     throw std::runtime_error("Attempted to create NBT compound with too large name.");
 
         // TAG type + name length value + name length + END TAG type
-        this->adjust_size(sizeof(int8_t) + sizeof(uint16_t) + name_in.size() + sizeof(int8_t));
+        this->adjust_byte_count(sizeof(int8_t) + sizeof(uint16_t) + name_in.size() + sizeof(int8_t));
     }
 
     compound::compound(std::unique_ptr<char[]> raw, size_t raw_size, std::pmr::memory_resource *pmr_rsrc_in)
@@ -39,7 +39,7 @@ namespace melon::nbt
               name(mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, "")),
               tags(tag_list_t(pmr_rsrc)),
               depth(1),
-              max_size(-1)
+              max_bytes(-1)
     {
         if (raw_size < 5) [[unlikely]] throw std::runtime_error("NBT Compound Tag Too Small.");
 
@@ -52,7 +52,7 @@ namespace melon::nbt
             *name = std::string_view(itr, name_len);
 
             itr += name_len;
-            size_v += 3 + name_len;
+            byte_count_v += 3 + name_len;
 
             read(itr, raw.get() + raw_size);
         }
@@ -73,16 +73,16 @@ namespace melon::nbt
         if (name_in.size() > std::numeric_limits<uint16_t>::max()) [[unlikely]] throw std::runtime_error("Attempted to create NBT compound with too large name.");
 
         std::visit([this](auto &&tag) {
-            depth    = tag->depth + 1;
-            max_size = tag->max_size;
+            depth     = tag->depth + 1;
+            max_bytes = tag->max_bytes;
         }, parent_in);
 
         if (depth > 512) [[unlikely]] throw std::runtime_error("NBT Depth exceeds 512.");
 
         if (std::holds_alternative<list *>(parent_in))
-            this->adjust_size(sizeof(int8_t));
+            this->adjust_byte_count(sizeof(int8_t));
         else
-            this->adjust_size(sizeof(int8_t) + sizeof(uint16_t) + name_in.size() + sizeof(int8_t));
+            this->adjust_byte_count(sizeof(int8_t) + sizeof(uint16_t) + name_in.size() + sizeof(int8_t));
     }
 
     compound::compound(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, mem::pmr::unique_ptr<std::pmr::string> name_in)
@@ -93,14 +93,14 @@ namespace melon::nbt
               tags(tag_list_t(pmr_rsrc))
     {
         std::visit([this](auto &&tag) {
-            depth    = tag->depth + 1;
-            max_size = tag->max_size;
+            depth     = tag->depth + 1;
+            max_bytes = tag->max_bytes;
         }, parent_in);
 
         if (depth > 512) [[unlikely]] throw std::runtime_error("NBT Depth exceeds 512.");
 
         if (std::holds_alternative<compound *>(parent_in))
-            size_v += sizeof(uint16_t) + name->size() + sizeof(int8_t); // compound::read parent reads the compound tag type
+            byte_count_v += sizeof(uint16_t) + name->size() + sizeof(int8_t); // compound::read parent reads the compound tag type
 
         try
         {
@@ -121,11 +121,11 @@ namespace melon::nbt
             std::cout << pmr_rsrc->get_records().size() << " Allocations left in the record for compound." << std::endl;
 
         if (parent && std::holds_alternative<list *>(parent.value()))
-            adjust_size(sizeof(int8_t) * -1);
+            adjust_byte_count(sizeof(int8_t) * -1);
         else
-            adjust_size((sizeof(int8_t) + sizeof(uint16_t) + name->size() + sizeof(int8_t)) * -1);
+            adjust_byte_count((sizeof(int8_t) + sizeof(uint16_t) + name->size() + sizeof(int8_t)) * -1);
 
-        assert(size_v == 0);
+        assert(byte_count_v == 0);
     }
 
     char *compound::read(char *itr, const char *const itr_end)
@@ -199,7 +199,7 @@ namespace melon::nbt
 
         if (tag_type != tag_end) [[unlikely]] throw std::runtime_error("NBT compound parsing ended before reaching END tag.");
 
-        size_v += itr - itr_start;
+        byte_count_v += itr - itr_start;
         return itr;
     }
 
@@ -281,25 +281,118 @@ namespace melon::nbt
 
     // Circular dependency hell
     template<>
-    std::optional<std::reference_wrapper<compound>> list::push<tag_compound>(const std::function<void(compound &)> &builder)
+    std::optional<std::reference_wrapper<compound>> list::insert<tag_compound>(const generic_iterator &itr, const std::function<void(compound &)> &builder)
     {
         auto container = mem::pmr::make_unique<compound>(pmr_rsrc, this, "");
 
-        if (builder) builder(*container);
-        auto cont_ptr = container.get();
-
         try
         {
-            tags.push_back(static_cast<void *>(container.get()));
+            if (builder) builder(*container);
+            tags.insert(itr.itr, static_cast<void *>(container.get()));
         } catch (...)
         {
-            adjust_size(container->size() * -1);
+            adjust_byte_count(container->bytes() * -1);
             throw;
         }
 
         count++;
-        static_cast<void>(container.release());
-        return *cont_ptr;
+        return *container.release();
+    }
+
+    // I'm 80% confident giving this a strong exception guarantee. Worst case, no elements will be lost, but it will be unknown which container they are in.
+    // The most common failure cases will be caught before any changes: max depth exceeded, max byte size exceeded, incompatible allocators, and bad_alloc.
+    void compound::merge(compound &src)
+    {
+        if (*src.pmr_rsrc != *this->pmr_rsrc) throw std::runtime_error("Attempt to merge NBT compounds with different allocators.");
+
+        // Perform a first pass to check depth and size
+        size_t new_size = 0;
+        size_t new_count = 0;
+
+        for (auto itr = src.tags.begin(); itr != src.tags.end(); itr++)
+        {
+            if (!contains(itr->first))
+            {
+                std::visit([this, &new_size, &new_count](auto &&tag) {
+                    if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
+                        if ((depth + tag->get_tree_depth()) > 512) throw std::runtime_error("Merge attempt would result in too deep structure (>512).");
+
+                    if ((new_size += tag->bytes()) > this->max_bytes) throw std::runtime_error("Merge attempt would result in too large structure.");
+                    new_count++;
+                }, itr->second);
+            }
+        }
+
+        tags.reserve(tags.size() + new_count); // Try to force an early throw over bad_alloc.
+
+        for (auto itr = src.tags.begin(); itr != src.tags.end();)
+        {
+            if (!contains(itr->first))
+            {
+                std::visit([this, &src, &itr](auto tag) {
+                    adjust_byte_count(tag->bytes()); // Shouldn't throw due to check above
+
+                    // This would be possible with an extract and an insert, but we could lose elements mid-flight if an exception is thrown.
+                    // Instead, do this in a transactional fashion. We're only copying a short string and a pointer here, so it should be fine.
+                    const auto &[_, success] = tags.insert(std::pair{ std::string_view(*tag->name), tag }); // Really can't think of why this would throw at this point...
+                    if (!success) throw std::runtime_error("Insertion failure when merging NBT compounds.");
+
+                    src.adjust_byte_count(tag->bytes() * -1);
+                    itr = src.tags.erase(itr);
+
+                    if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
+                        tag->change_properties({ .new_depth = depth + 1, .new_max_bytes = max_bytes, .new_parent = this, .new_top = top });
+                }, itr->second);
+            }
+            else
+                itr++;
+        }
+    }
+
+    uint16_t compound::get_tree_depth()
+    {
+        uint16_t ret = depth;
+
+        for (auto itr: tags)
+        {
+            std::visit([this, &ret](auto &&tag) {
+                uint16_t child_depth;
+
+                if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
+                    if ((child_depth = tag->get_tree_depth()) > ret) ret = child_depth;
+            }, itr.second);
+        }
+
+        return ret;
+    }
+
+    void compound::change_properties(container_property_args props)
+    {
+        if (props.new_parent)
+        {
+            parent = props.new_parent.value();
+            props.new_parent = std::nullopt;
+        }
+
+        if (props.new_depth || props.new_max_bytes || props.new_top)
+        {
+            if (props.new_depth)
+            {
+                depth = props.new_depth.value_or(depth);
+                props.new_depth = depth + 1;
+            }
+
+            max_bytes = props.new_max_bytes.value_or(max_bytes);
+            top = props.new_top.value_or(top);
+
+            for (auto itr: tags)
+            {
+                std::visit([this, &props](auto &&tag) {
+                    if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
+                        tag->change_properties(props);
+                }, itr.second);
+            }
+        }
     }
 
     size_t compound::erase(std::string_view &&key)
@@ -315,19 +408,19 @@ namespace melon::nbt
             return 0;
     }
 
-    void compound::adjust_size(int64_t by)
+    void compound::adjust_byte_count(int64_t by)
     {
-        if (max_size > -1 && by > -1 && (size_v + by) > static_cast<uint64_t>(max_size)) [[unlikely]] throw std::runtime_error("NBT compound grew too large.");
+        if (max_bytes > -1 && by > -1 && (byte_count_v + by) > static_cast<uint64_t>(max_bytes)) [[unlikely]] throw std::runtime_error("NBT compound grew too large.");
 
         if (parent.has_value())
         {
             std::visit([by](auto &&tag) {
-                tag->adjust_size(by);
+                tag->adjust_byte_count(by);
             }, parent.value());
         }
 
         // Only adjust size after all recursive checks to allow strong exception guarantee.
-        size_v += by;
+        byte_count_v += by;
     }
 
     compound::tag_list_t::iterator compound::destroy_tag(const tag_list_t::iterator &itr)
@@ -337,7 +430,7 @@ namespace melon::nbt
 
             if constexpr (std::is_same_v<decltype(tag_ptr), primitive_tag *>)
             {
-                this->adjust_size(static_cast<int64_t>(tag_ptr->size()) * -1);
+                this->adjust_byte_count(static_cast<int64_t>(tag_ptr->bytes()) * -1);
 
                 if (tag_ptr->name != nullptr)
                 {
@@ -346,7 +439,7 @@ namespace melon::nbt
                 }
 
                 if (tag_properties[tag_ptr->tag_type].category & (cat_array | cat_string) && tag_ptr->value.generic_ptr != nullptr)
-                    pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->count() * tag_properties[tag_ptr->tag_type].size + padding_size,
+                    pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->size() * tag_properties[tag_ptr->tag_type].size + padding_size,
                                          tag_properties[tag_ptr->tag_type].size);
             }
 

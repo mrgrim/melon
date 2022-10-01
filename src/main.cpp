@@ -86,7 +86,7 @@ int main()
     std::cout << "Elapsed time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - start) << std::endl;
 
 #if NBT_DEBUG == true
-    std::cout << "Calculated level.dat size: " << parsed_nbt.size() << std::endl;
+    std::cout << "Calculated level.dat size: " << parsed_nbt.bytes() << std::endl;
 
     parsed_nbt.insert<nbt::tag_float>("Test Value", 1.123f);
     parsed_nbt.insert<nbt::tag_long>("Test Value 2", (int64_t)34198);
@@ -115,6 +115,9 @@ int main()
     auto &enabled_datapacks = parsed_nbt.find<nbt::tag_compound>("Data")
                                         .find<nbt::tag_compound>("DataPacks")
                                         .find<nbt::tag_list>("Enabled").value().get();
+
+    auto &datapacks = parsed_nbt.find<nbt::tag_compound>("Data")
+                                .find<nbt::tag_compound>("DataPacks").value().get();
 
     for (const auto pack_name: nbt::list::range<nbt::tag_string>{ enabled_datapacks })
         std::cout << pack_name << std::endl;
@@ -179,7 +182,7 @@ int main()
     });
 
     std::cout << *(my_compound.to_snbt()) << std::endl;
-    std::cout << "my_compound size: " << my_compound.size() << std::endl;
+    std::cout << "my_compound size/depth: " << my_compound.bytes() << "/" << my_compound.get_tree_depth() << std::endl;
 
     {
         auto &test_compound = my_compound.find<nbt::tag_compound>("Test Compound").value().get();
@@ -224,7 +227,7 @@ int main()
     }
 
     std::cout << *(my_compound.to_snbt()) << std::endl;
-    std::cout << "my_compound size: " << my_compound.size() << std::endl;
+    std::cout << "my_compound size: " << my_compound.bytes() << std::endl;
 
     auto &scheduled_events = parsed_nbt.find<nbt::tag_compound>("Data")
                                        .find<nbt::tag_list>("ScheduledEvents").value().get();
@@ -232,9 +235,33 @@ int main()
     for (auto &&event: nbt::list::range<nbt::tag_compound>{ scheduled_events })
         std::cout << "Scheduled Event " << event.find<nbt::tag_string>("Name").value() << " at " << event.find<nbt::tag_long>("TriggerTime").value() << std::endl;
 
-    std::cout << "And a random repeat..." << std::endl;
-    auto &event = scheduled_events.at<nbt::tag_compound>(std::rand() % scheduled_events.count);
-    std::cout << "Scheduled Event " << event.find<nbt::tag_string>("Name").value() << " at " << event.find<nbt::tag_long>("TriggerTime").value() << std::endl;
+    {
+        std::cout << "And a random repeat..." << std::endl;
+        auto &random_event = scheduled_events.at<nbt::tag_compound>(std::rand() % scheduled_events.count);
+        std::cout << "Scheduled Event " << random_event.find<nbt::tag_string>("Name").value() << " at " << random_event.find<nbt::tag_long>("TriggerTime").value() << std::endl;
+    }
+
+    std::cout << "Let's erase a few..." << std::endl;
+    scheduled_events.erase(scheduled_events.begin() + 2, scheduled_events.begin() + 4);
+
+    std::cout << "One more but generically!" << std::endl;
+    for (auto &&event: scheduled_events)
+    {
+        auto name_res = std::get<nbt::tag_compound>(event).get().find("Name").value();
+        auto ttime_res = std::get<nbt::tag_compound>(event).get().find("TriggerTime").value();
+
+        std::cout << "Scheduled Event " << std::get<nbt::tag_string>(std::get<2>(name_res))
+                  << " at " << std::get<nbt::tag_long>(std::get<2>(ttime_res)) << std::endl;
+    }
+
+    {
+        std::cout << "And a random repeat..." << std::endl;
+        auto random_event = scheduled_events.at(std::rand() % scheduled_events.count);
+        auto name_res = std::get<nbt::tag_compound>(random_event).get().find("Name").value();
+        auto ttime_res = std::get<nbt::tag_compound>(random_event).get().find("TriggerTime").value();
+        std::cout << "Scheduled Event " << std::get<nbt::tag_string>(std::get<2>(name_res))
+                  << " at " << std::get<nbt::tag_long>(std::get<2>(ttime_res)) << std::endl;
+    }
 
     auto &end_gateway_list = (*end_gateway_list_opt).get();
     std::cout << end_gateway_list.at<nbt::tag_int>(2) << " " << enabled_datapacks.at<nbt::tag_string>(3) << " "
@@ -258,12 +285,15 @@ int main()
 
     std::string debug_out;
 
+    std::cout << "Time for the big merge!" << std::endl;
+    datapacks.merge(my_compound);
+
     parsed_nbt.to_snbt(debug_out);
     std::cout << debug_out << std::endl;
 
     std::cout << "sizeof(void *): " << sizeof(void *) << std::endl;
 
-    std::cout << "Modified level.dat size prior to deletion: " << parsed_nbt.size() << std::endl;
+    std::cout << "Modified level.dat size/depth prior to deletion: " << parsed_nbt.bytes() << "/" << parsed_nbt.get_tree_depth() << std::endl;
     //delete parsed_nbt;
     //std::cout << "Deleted parsed NBT." << std::endl;
 

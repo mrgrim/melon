@@ -18,7 +18,8 @@
 #include "util/util.h"
 #include "mem/pmr.h"
 
-// TODO: List item delete
+// TODO: Compound extract method (w/ associated insert)
+// TODO: Compound container insert methods for already built containers and extracted nodes
 // TODO: Add binary serialization
 // TODO: Add SNBT parsing
 // TODO: Lift debug PMR out of compound class
@@ -168,18 +169,17 @@ namespace melon::nbt
         std::optional<std::reference_wrapper<compound>> create(std::string_view tag_name, const std::function<void(compound &)> &builder = nullptr)
         {
             if (tags.contains(tag_name)) return std::nullopt;
-
             auto container = mem::pmr::make_unique<compound>(pmr_rsrc, this, tag_name);
-            if (builder) builder(*container);
 
             try
             {
+                if (builder) builder(*container);
                 const auto &[_, success] = tags.insert(std::pair{ std::string_view(*(container->name)), container.get() });
                 if (!success) throw std::runtime_error("Failed to insert NBT compound.");
             }
             catch (...)
             {
-                this->adjust_size(container->size() * -1);
+                this->adjust_byte_count(container->bytes() * -1);
                 throw;
             }
 
@@ -214,7 +214,7 @@ namespace melon::nbt
             else if constexpr (tag_type == tag_double)
                 tag_ptr->value.tag_double = value;
 
-            this->adjust_size(tag_ptr->size());
+            this->adjust_byte_count(tag_ptr->bytes());
 
             const auto &[_, success] = tags.insert(std::pair{ std::string_view(*name_ptr), tag_ptr.get() });
             if (!success) throw std::runtime_error("Failed to insert new tag into NBT compound.");
@@ -238,15 +238,27 @@ namespace melon::nbt
         void insert(const std::string_view tag_name, const C<V, N...> &values, insert_args args = { .overwrite = false })
         { insert_array_general<tag_type>(tag_name, values, args.overwrite); }
 
-        iterator erase(const iterator&& pos)
+        bool contains(const std::string_view key)
+        { return tags.contains(key); }
+
+        void merge (compound &src);
+
+        iterator erase(const iterator &&pos)
         { return iterator(destroy_tag(pos.itr)); }
+
         size_t erase(std::string_view &&key);
 
         void to_snbt(std::string &out);
         std::unique_ptr<std::string> to_snbt();
 
+        [[nodiscard]] size_t bytes() const
+        { return byte_count_v; }
+
         [[nodiscard]] size_t size() const
-        { return size_v; }
+        { return tags.size(); }
+
+        uint16_t get_tree_depth();
+        void clear();
 
         compound(const compound &) = delete;
         compound &operator=(const compound &) = delete;
@@ -267,9 +279,9 @@ namespace melon::nbt
 
         std::pair<mem::pmr::unique_ptr<std::pmr::string>, mem::pmr::unique_ptr<primitive_tag>> new_primitive(std::string_view, tag_type_enum, bool overwrite = false);
         char *read(char *itr, const char *itr_end);
-        void adjust_size(int64_t by);
+        void adjust_byte_count(int64_t by);
         tag_list_t::iterator destroy_tag(const tag_list_t::iterator &itr);
-        void clear();
+        void change_properties(container_property_args props);
 
         template<tag_type_enum tag_type, class V = std::remove_pointer_t<tag_prim_t<tag_type>>>
         requires is_nbt_type_match<V *, tag_type> && is_nbt_array<tag_type>
@@ -284,8 +296,8 @@ namespace melon::nbt
             auto [name_ptr, tag_ptr] = new_primitive(tag_name, tag_type, overwrite);
             auto array_ptr           = mem::pmr::make_unique<V[]>(pmr_rsrc, values.size() + (padding_size / sizeof(V)));
 
-            tag_ptr->change_count(values.size());
-            this->adjust_size(tag_ptr->size());
+            tag_ptr->set_size(values.size());
+            this->adjust_byte_count(tag_ptr->bytes());
 
             if constexpr (tag_type == tag_string)
                 tag_ptr->value.tag_string     = array_ptr.get();
@@ -312,9 +324,9 @@ namespace melon::nbt
 
         tag_list_t tags;
 
-        uint16_t depth    = 0;
-        size_t   size_v   = 0;
-        int64_t  max_size = -1;
+        uint16_t depth        = 0;
+        size_t   byte_count_v = 0;
+        int64_t  max_bytes    = -1;
     };
 
     static_assert(std::forward_iterator<compound::iterator>);

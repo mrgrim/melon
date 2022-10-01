@@ -102,6 +102,15 @@ namespace melon::nbt
                                       { sizeof(int32_t), tag_category_enum::cat_array },
                                       { sizeof(int64_t), tag_category_enum::cat_array }
                               }};
+
+    struct container_property_args : util::forced_named_init<container_property_args>
+    {
+        std::optional<uint16_t> new_depth = std::nullopt;
+        std::optional<int64_t> new_max_bytes = std::nullopt;
+        std::optional<std::variant<compound *, list *>> new_parent = std::nullopt;
+        std::optional<compound *> new_top = std::nullopt;
+    };
+
     template<tag_type_enum tag_idx>
     concept is_nbt_primitive = (tag_idx < tag_count) && (tag_properties[tag_idx].category == tag_category_enum::cat_primitive);
 
@@ -164,7 +173,7 @@ namespace melon::nbt
             primitive_tag, primitive_tag, list, compound, primitive_tag, primitive_tag>>::type;
 
     template<typename T, tag_type_enum tag_idx>
-    concept is_nbt_type_match = std::is_same_v<tag_prim_t<tag_idx>, T>;
+    concept is_nbt_type_match = std::is_same_v<tag_prim_t<tag_idx>, std::remove_reference_t<T>>;
 
 // Class does not own the pointers to held array types. This is to avoid storing the state necessary to do so with PMR.
 // Exploit the fact that no sane compiler will mess this up, despite this being the standards most idiotic instance of UB
@@ -234,30 +243,30 @@ namespace melon::nbt
         auto get()
         {
             if constexpr (tag_type == tag_string)
-                return std::string_view{ value.tag_string, count_v };
+                return std::string_view{ value.tag_string, size_v };
             else if constexpr (tag_type == tag_byte_array)
-                return std::span(value.tag_byte_array, count_v);
+                return std::span(value.tag_byte_array, size_v);
             else if constexpr (tag_type == tag_int_array)
-                return std::span(value.tag_int_array, count_v);
+                return std::span(value.tag_int_array, size_v);
             else if constexpr (tag_type == tag_long_array)
-                return std::span(value.tag_long_array, count_v);
+                return std::span(value.tag_long_array, size_v);
         }
 
         tag_variant_t get_generic();
 
-        [[nodiscard]] auto count() const
-        { return count_v; }
-
-        [[nodiscard]] size_t size(size_params params = { .full_tag = true }) const
+        [[nodiscard]] size_t bytes(size_params params = { .full_tag = true }) const
         {
             size_t name_size = params.full_tag ? sizeof(int8_t) + sizeof(uint16_t) + name->size() : 0;
-            if (count() == 0)
+            if (size() == 0)
                 return name_size + tag_properties[tag_type].size;
             else if (tag_type == tag_string)
-                return name_size + sizeof(uint16_t) + count();
+                return name_size + sizeof(uint16_t) + size();
             else
-                return name_size + sizeof(int32_t) + (count() * tag_properties[tag_type].size);
+                return name_size + sizeof(int32_t) + (size() * tag_properties[tag_type].size);
         }
+
+        [[nodiscard]] size_t size() const
+        { return size_v; }
 
     private:
         friend class list;
@@ -269,15 +278,15 @@ namespace melon::nbt
         requires (!std::is_array_v<T>);
 
         // Must be set to 0 if not a string or array type
-        size_t count_v;
+        size_t size_v;
 
         explicit primitive_tag(tag_type_enum type_in = tag_byte, uint64_t value_in = 0, std::pmr::string *name_in = nullptr, size_t size_in = 0) noexcept
-                : tag_type(type_in), name(name_in), count_v(size_in)
+                : tag_type(type_in), name(name_in), size_v(size_in)
         { value.generic = value_in; }
 
         // Caller must take care to allocate new memory and assign it to the generic pointer
-        void change_count(uint32_t new_size)
-        { count_v = new_size; }
+        void set_size(uint32_t new_size)
+        { size_v = new_size; }
     };
 
     template<class T>
