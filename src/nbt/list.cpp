@@ -13,7 +13,7 @@ namespace melon::nbt
     list::list(std::variant<compound *, list *> parent_in, std::string_view name_in, tag_type_enum tag_type_in)
             : parent(parent_in),
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
-              pmr_rsrc(top->pmr_rsrc),
+              pmr_rsrc(std::visit([](auto &&tag) -> std::pmr::memory_resource * { return tag->pmr_rsrc; }, parent_in)),
               name(mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, name_in)),
               type(tag_type_in),
               tags(tag_list_t(pmr_rsrc))
@@ -32,7 +32,7 @@ namespace melon::nbt
     list::list(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, mem::pmr::unique_ptr<std::pmr::string> name_in, tag_type_enum tag_type_in)
             : parent(parent_in),
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
-              pmr_rsrc(top->pmr_rsrc),
+              pmr_rsrc(std::visit([](auto &&tag) -> std::pmr::memory_resource * { return tag->pmr_rsrc; }, parent_in)),
               name(std::move(name_in)),
               type(tag_type_in),
               tags(tag_list_t(pmr_rsrc))
@@ -96,7 +96,7 @@ namespace melon::nbt
     {
         if (props.new_parent)
         {
-            parent = props.new_parent.value();
+            parent = props.new_parent.value_or(parent);
             props.new_parent = std::nullopt;
         }
 
@@ -323,7 +323,7 @@ namespace melon::nbt
         if (max_bytes > -1 && by > -1 && (byte_count_v + by) > static_cast<uint64_t>(max_bytes)) [[unlikely]] throw std::runtime_error("NBT compound grew too large.");
 
         std::visit([by](auto &&tag) {
-            tag->adjust_byte_count(by);
+            if (tag != nullptr) tag->adjust_byte_count(by);
         }, parent);
 
         // Only adjust size after all recursive checks to allow strong exception guarantee.

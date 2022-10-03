@@ -104,6 +104,16 @@ namespace melon::mem::pmr
         }
     }
 
+    template<class T>
+    auto destroy_obj_using_pmr(std::pmr::memory_resource *pmr_rsrc, T *obj)
+    requires (!std::is_array_v<T>)
+    {
+        if constexpr (std::is_destructible_v<T>)
+            std::destroy_at<T>(obj);
+
+        pmr_rsrc->deallocate(obj,sizeof(T), alignof(T));
+    }
+
     template<class T, class B = std::remove_pointer_t<std::decay_t<T>>>
     requires (std::is_array_v<T>)
     auto make_unique(std::pmr::memory_resource *pmr_rsrc, size_t size)
@@ -152,11 +162,6 @@ namespace melon::mem::pmr
         {
             alloc_records.reserve(initial_size);
             dealloc_records.reserve(initial_size);
-        }
-
-        ~recording_mem_resource() override
-        {
-            delete upstream_resource;
         }
 
         void start_recording()

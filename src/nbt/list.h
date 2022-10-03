@@ -25,7 +25,8 @@ namespace melon::nbt
     class list
     {
     public:
-        using allocator_type = std::pmr::polymorphic_allocator<std::byte>;
+        // This is only ever privately constructed, so this isn't really needed
+        //using allocator_type = std::pmr::polymorphic_allocator<>;
         using tag_list_t = std::pmr::vector<void *>;
 
         // @formatter:off

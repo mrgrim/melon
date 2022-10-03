@@ -180,7 +180,7 @@ namespace melon::nbt
     class primitive_tag
     {
         struct size_params : util::forced_named_init<size_params> {
-            bool full_tag;
+            bool full_tag = true;
         };
 
     public:

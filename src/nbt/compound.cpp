@@ -15,10 +15,10 @@
 
 namespace melon::nbt
 {
-    compound::compound(std::string_view name_in, int64_t max_bytes_in, std::pmr::memory_resource *pmr_rsrc_in)
-            : parent(std::nullopt),
+    compound::compound(std::string_view name_in, int64_t max_bytes_in, const std::function<void(compound &)> &builder, const allocator_type &alloc)
+            : parent(static_cast<compound *>(nullptr)),
               top(this),
-              pmr_rsrc(new mem::pmr::recording_mem_resource(pmr_rsrc_in, true)),
+              pmr_rsrc(alloc.resource()),
               name(mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, name_in)),
               tags(tag_list_t(pmr_rsrc)),
               depth(1),
@@ -30,12 +30,14 @@ namespace melon::nbt
 
         // TAG type + name length value + name length + END TAG type
         this->adjust_byte_count(sizeof(int8_t) + sizeof(uint16_t) + name_in.size() + sizeof(int8_t));
+
+        if (builder) builder(*this);
     }
 
-    compound::compound(std::unique_ptr<char[]> raw, size_t raw_size, std::pmr::memory_resource *pmr_rsrc_in)
-            : parent(std::nullopt),
+    compound::compound(std::unique_ptr<char[]> raw, size_t raw_size, const allocator_type &alloc)
+            : parent(static_cast<compound *>(nullptr)),
               top(this),
-              pmr_rsrc(new mem::pmr::recording_mem_resource(pmr_rsrc_in, true)),
+              pmr_rsrc(alloc.resource()),
               name(mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, "")),
               tags(tag_list_t(pmr_rsrc)),
               depth(1),
@@ -66,7 +68,7 @@ namespace melon::nbt
     compound::compound(std::variant<compound *, list *> parent_in, std::string_view name_in)
             : parent(parent_in),
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
-              pmr_rsrc(top->pmr_rsrc),
+              pmr_rsrc(std::visit([](auto &&tag) -> std::pmr::memory_resource * { return tag->pmr_rsrc; }, parent_in)),
               name(mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, name_in)),
               tags(tag_list_t(pmr_rsrc))
     {
@@ -88,7 +90,7 @@ namespace melon::nbt
     compound::compound(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, mem::pmr::unique_ptr<std::pmr::string> name_in)
             : parent(parent_in),
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
-              pmr_rsrc(top->pmr_rsrc),
+              pmr_rsrc(std::visit([](auto &&tag) -> std::pmr::memory_resource * { return tag->pmr_rsrc; }, parent_in)),
               name(name_in.get() != nullptr ? std::move(name_in) : mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, "")),
               tags(tag_list_t(pmr_rsrc))
     {
@@ -117,10 +119,7 @@ namespace melon::nbt
     {
         clear();
 
-        if (this == top)
-            std::cout << pmr_rsrc->get_records().size() << " Allocations left in the record for compound." << std::endl;
-
-        if (parent && std::holds_alternative<list *>(parent.value()))
+        if (std::holds_alternative<list *>(parent))
             adjust_byte_count(sizeof(int8_t) * -1);
         else
             adjust_byte_count((sizeof(int8_t) + sizeof(uint16_t) + name->size() + sizeof(int8_t)) * -1);
@@ -224,6 +223,74 @@ namespace melon::nbt
         return tag;
     }
 
+    compound::insert_return_type compound::insert(node_type &&node_in)
+    {
+        auto tag_value = node_in.tag_node.mapped();
+
+        return std::visit([this, &node_in](auto tag) -> insert_return_type  {
+            if constexpr (!std::is_same_v<std::remove_reference_t<decltype(tag)>, primitive_tag *>)
+                if ((this->depth + tag->get_tree_depth()) > 512) throw std::runtime_error("Insertion would result in too deep structure (>512).");
+
+            this->adjust_byte_count(tag->bytes());
+
+            try
+            {
+                auto [pos, success, handle] = tags.insert(std::move(node_in.tag_node));
+
+                if constexpr (!std::is_same_v<std::remove_reference_t<decltype(tag)>, primitive_tag *>)
+                    tag->change_properties({ .new_depth = this->depth + 1, .new_parent = this, .new_top = this->top });
+
+                return { iterator(std::move(pos)), success, std::move(node_in) };
+            }
+            catch (...)
+            {
+                this->adjust_byte_count(tag->bytes() * -1);
+                throw;
+            }
+        }, tag_value);
+    }
+
+    compound::node_type compound::extract(const const_iterator &pos)
+    {
+        if (pos != cend())
+        {
+            auto tag_node    = tags.extract(pos.itr);
+            auto tag_value   = tag_node.mapped();
+            auto node_handle = compound_node_handle(std::move(tag_node));
+
+            std::visit([this](auto tag) {
+                // This is the only way to get a list with null top and parent members. Such a list is not in a complete state until it is
+                // inserted into a new compound. All children will inherit its null top value until then.
+
+                if constexpr (std::is_same_v<std::remove_reference_t<decltype(tag)>, compound *>)
+                    tag->change_properties({ .new_depth = 1, .new_parent = static_cast<compound *>(nullptr), .new_top = tag });
+                else if constexpr (std::is_same_v<std::remove_reference_t<decltype(tag)>, list *>)
+                    tag->change_properties({ .new_depth = 1, .new_parent = static_cast<compound *>(nullptr), .new_top = static_cast<compound *>(nullptr) });
+
+                this->adjust_byte_count(tag->bytes() * -1);
+            }, tag_value);
+
+            return compound_node_handle(std::move(node_handle));
+        }
+        else
+            return compound_node_handle{ };
+    }
+
+    compound::node_type compound::extract(const std::string_view &key, tag_type_enum type_requested)
+    {
+        const auto itr = const_iterator(tags.find(key));
+
+        if (itr != cend())
+        {
+            const auto &[found_key, found_type, found_tag] = *itr;
+
+            if (type_requested == tag_end || type_requested == found_type)
+                return extract(itr);
+        }
+
+        return compound_node_handle{ };
+    }
+
     void compound::to_snbt(std::string &out)
     {
         if (name != nullptr && !name->empty())
@@ -263,7 +330,7 @@ namespace melon::nbt
     std::pair<mem::pmr::unique_ptr<std::pmr::string>, mem::pmr::unique_ptr<primitive_tag>>
     compound::new_primitive(std::string_view tag_name, tag_type_enum tag_type, bool overwrite)
     {
-        auto itr = tags.find(tag_name);
+        const auto &itr = tags.find(tag_name);
 
         if (itr != tags.end())
         {
@@ -306,14 +373,14 @@ namespace melon::nbt
         if (*src.pmr_rsrc != *this->pmr_rsrc) throw std::runtime_error("Attempt to merge NBT compounds with different allocators.");
 
         // Perform a first pass to check depth and size
-        size_t new_size = 0;
+        size_t new_size  = 0;
         size_t new_count = 0;
 
         for (auto itr = src.tags.begin(); itr != src.tags.end(); itr++)
         {
             if (!contains(itr->first))
             {
-                std::visit([this, &new_size, &new_count](auto &&tag) {
+                std::visit([this, &new_size, &new_count](auto tag) {
                     if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
                         if ((depth + tag->get_tree_depth()) > 512) throw std::runtime_error("Merge attempt would result in too deep structure (>512).");
 
@@ -335,13 +402,17 @@ namespace melon::nbt
                     // This would be possible with an extract and an insert, but we could lose elements mid-flight if an exception is thrown.
                     // Instead, do this in a transactional fashion. We're only copying a short string and a pointer here, so it should be fine.
                     const auto &[_, success] = tags.insert(std::pair{ std::string_view(*tag->name), tag }); // Really can't think of why this would throw at this point...
-                    if (!success) throw std::runtime_error("Insertion failure when merging NBT compounds.");
 
-                    src.adjust_byte_count(tag->bytes() * -1);
-                    itr = src.tags.erase(itr);
+                    if (success)
+                    {
+                        src.adjust_byte_count(tag->bytes() * -1);
+                        itr = src.tags.erase(itr);
 
-                    if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
-                        tag->change_properties({ .new_depth = depth + 1, .new_max_bytes = max_bytes, .new_parent = this, .new_top = top });
+                        if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
+                            tag->change_properties({ .new_depth = depth + 1, .new_max_bytes = max_bytes, .new_parent = this, .new_top = top });
+                    }
+                    else
+                        adjust_byte_count(tag->bytes() * -1);
                 }, itr->second);
             }
             else
@@ -355,7 +426,7 @@ namespace melon::nbt
 
         for (auto itr: tags)
         {
-            std::visit([this, &ret](auto &&tag) {
+            std::visit([&ret](auto &&tag) {
                 uint16_t child_depth;
 
                 if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
@@ -383,11 +454,11 @@ namespace melon::nbt
             }
 
             max_bytes = props.new_max_bytes.value_or(max_bytes);
-            top = props.new_top.value_or(top);
+            top       = props.new_top.value_or(top);
 
             for (auto itr: tags)
             {
-                std::visit([this, &props](auto &&tag) {
+                std::visit([&props](auto &&tag) {
                     if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
                         tag->change_properties(props);
                 }, itr.second);
@@ -412,12 +483,9 @@ namespace melon::nbt
     {
         if (max_bytes > -1 && by > -1 && (byte_count_v + by) > static_cast<uint64_t>(max_bytes)) [[unlikely]] throw std::runtime_error("NBT compound grew too large.");
 
-        if (parent.has_value())
-        {
-            std::visit([by](auto &&tag) {
-                tag->adjust_byte_count(by);
-            }, parent.value());
-        }
+        std::visit([by](auto &&tag) {
+            if (tag != nullptr) tag->adjust_byte_count(by);
+        }, parent);
 
         // Only adjust size after all recursive checks to allow strong exception guarantee.
         byte_count_v += by;
@@ -425,8 +493,16 @@ namespace melon::nbt
 
     compound::tag_list_t::iterator compound::destroy_tag(const tag_list_t::iterator &itr)
     {
-        return std::visit([this, &itr](auto tag_ptr) -> auto {
-            const auto &ret_itr = tags.erase(itr);
+        auto tag_variant = itr->second;
+        const auto &ret_itr = tags.erase(itr);
+        destroy_tag(tag_variant);
+
+        return ret_itr;
+    }
+
+    void compound::destroy_tag(std::variant<compound *, list *, primitive_tag *> &tag_variant)
+    {
+        std::visit([this](auto tag_ptr) {
 
             if constexpr (std::is_same_v<decltype(tag_ptr), primitive_tag *>)
             {
@@ -445,8 +521,7 @@ namespace melon::nbt
 
             std::destroy_at(tag_ptr);
             pmr_rsrc->deallocate(tag_ptr, sizeof(std::remove_pointer_t<decltype(tag_ptr)>), alignof(std::remove_pointer_t<decltype(tag_ptr)>));
-            return ret_itr;
-        }, itr->second);
+        }, tag_variant);
     }
 
     void compound::clear()
@@ -456,5 +531,35 @@ namespace melon::nbt
         {
             itr = destroy_tag(itr);
         }
+    }
+
+    compound::iterator::value_type compound::iterator::fetch_value(itr_value &value_in)
+    {
+        if (std::holds_alternative<compound *>(value_in.second))
+            return { std::string_view(value_in.first), tag_compound, std::reference_wrapper<compound>(*std::get<compound *>(value_in.second)) };
+        else if (std::holds_alternative<list *>(value_in.second))
+            return { std::string_view(value_in.first), tag_list, std::reference_wrapper<list>(*std::get<list *>(value_in.second)) };
+        else if (std::holds_alternative<primitive_tag *>(value_in.second))
+        {
+            auto prim_ptr = std::get<primitive_tag *>(value_in.second);
+            return { std::string_view(value_in.first), prim_ptr->tag_type, prim_ptr->get_generic() };
+        }
+        else
+            std::unreachable();
+    }
+
+    compound::const_iterator::value_type compound::const_iterator::fetch_value(const itr_value &value_in)
+    {
+        if (std::holds_alternative<compound *>(value_in.second))
+            return { std::string_view(value_in.first), tag_compound, std::reference_wrapper<compound>(*std::get<compound *>(value_in.second)) };
+        else if (std::holds_alternative<list *>(value_in.second))
+            return { std::string_view(value_in.first), tag_list, std::reference_wrapper<list>(*std::get<list *>(value_in.second)) };
+        else if (std::holds_alternative<primitive_tag *>(value_in.second))
+        {
+            auto prim_ptr = std::get<primitive_tag *>(value_in.second);
+            return { std::string_view(value_in.first), prim_ptr->tag_type, prim_ptr->get_generic() };
+        }
+        else
+            std::unreachable();
     }
 }

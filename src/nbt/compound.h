@@ -18,11 +18,8 @@
 #include "util/util.h"
 #include "mem/pmr.h"
 
-// TODO: Compound extract method (w/ associated insert)
-// TODO: Compound container insert methods for already built containers and extracted nodes
 // TODO: Add binary serialization
 // TODO: Add SNBT parsing
-// TODO: Lift debug PMR out of compound class
 // TODO: Region file support
 
 namespace melon::nbt
@@ -32,7 +29,7 @@ namespace melon::nbt
     class compound
     {
     public:
-        using allocator_type = std::pmr::polymorphic_allocator<std::byte>;
+        using allocator_type = std::pmr::polymorphic_allocator<>;
         using tag_list_t = std::pmr::unordered_map<std::string_view, std::variant<compound *, list *, primitive_tag *>>;
 
         // @formatter:off
@@ -51,7 +48,6 @@ namespace melon::nbt
 
             explicit iterator(tag_list_t::iterator &&itr_in) : itr(std::move(itr_in)) { };
 
-            //const tag_prim_t<tag_type> *operator->() const { tag_prim_t<tag_type> ret; std::memcpy(&ret, &(ptr[index]->value)); };
             value_type operator*() const { return fetch_value(*itr); };
             auto &operator++() { itr++; return *this; };
             auto operator++(int) { auto old = *this; ++(*this); return old; };
@@ -59,32 +55,119 @@ namespace melon::nbt
             friend bool operator==(const iterator &lhs, const iterator &rhs) { return lhs.itr == rhs.itr; }
 
         private:
-            static value_type fetch_value(itr_value &value_in)
+            static value_type fetch_value(itr_value &value_in);
+        };
+
+        class const_iterator
+        {
+            friend class compound;
+
+            tag_list_t::const_iterator itr;
+            using itr_value = tag_list_t::const_iterator::value_type;
+        public:
+            using value_type = std::tuple<const std::string_view, const tag_type_enum, const tag_variant_t>;
+            using difference_type = int;
+            using iterator_category = std::forward_iterator_tag;
+
+            const_iterator() : itr() { };
+
+            explicit const_iterator(tag_list_t::const_iterator &&itr_in) : itr(std::move(itr_in)) { };
+            explicit const_iterator(tag_list_t::iterator &&itr_in) : itr(std::move(itr_in)) { };
+
+            value_type operator*() const { return fetch_value(*itr); };
+            auto &operator++() { itr++; return *this; };
+            auto operator++(int) { auto old = *this; ++(*this); return old; };
+
+            friend bool operator==(const const_iterator &lhs, const const_iterator &rhs) { return lhs.itr == rhs.itr; }
+
+        private:
+            static value_type fetch_value(const itr_value &value_in);
+        };
+        //@formatter:on
+
+        class compound_node_handle
+        {
+            friend class compound;
+
+            compound::tag_list_t::node_type tag_node{ };
+
+            explicit compound_node_handle(compound::tag_list_t::node_type &&tag_node_in)
+                    : tag_node(std::move(tag_node_in))
+            { }
+
+        public:
+            using allocator_type = compound::tag_list_t::node_type::allocator_type;
+            using key_type = compound::tag_list_t::node_type::key_type;
+            using mapped_type = tag_variant_t;
+
+            compound_node_handle() noexcept = default;
+            compound_node_handle(compound_node_handle &node_in) = delete;
+
+            compound_node_handle(compound_node_handle &&node_in) noexcept
+                    : tag_node(std::move(node_in.tag_node))
+            { }
+
+            compound_node_handle &operator=(compound_node_handle &&node_in) noexcept
             {
-                if (std::holds_alternative<compound *>(value_in.second))
-                    return { std::string_view(value_in.first), tag_compound, std::reference_wrapper<compound>(*std::get<compound *>(value_in.second)) };
-                else if (std::holds_alternative<list *>(value_in.second))
-                    return { std::string_view(value_in.first), tag_list, std::reference_wrapper<list>(*std::get<list *>(value_in.second)) };
-                else if (std::holds_alternative<primitive_tag *>(value_in.second))
+                tag_node = std::move(node_in.tag_node);
+                return *this;
+            }
+
+            ~compound_node_handle() = default;
+
+            [[nodiscard]] bool empty() const noexcept
+            { return tag_node.empty(); }
+
+            explicit operator bool() const noexcept
+            { return !tag_node.empty(); }
+
+            [[nodiscard]] allocator_type get_allocator() const
+            { return tag_node.get_allocator(); }
+
+            [[nodiscard]] key_type &key() const
+            { return tag_node.key(); }
+
+            [[nodiscard]] mapped_type mapped() const
+            {
+                if (std::holds_alternative<compound *>(tag_node.mapped()))
+                    return std::reference_wrapper<compound>(*std::get<compound *>(tag_node.mapped()));
+                else if (std::holds_alternative<list *>(tag_node.mapped()))
+                    return std::reference_wrapper<list>(*std::get<list *>(tag_node.mapped()));
+                else if (std::holds_alternative<primitive_tag *>(tag_node.mapped()))
                 {
-                    auto prim_ptr = std::get<primitive_tag *>(value_in.second);
-                    return { std::string_view(value_in.first), prim_ptr->tag_type, prim_ptr->get_generic() };
+                    auto prim_ptr = std::get<primitive_tag *>(tag_node.mapped());
+                    return prim_ptr->get_generic();
                 }
                 else
                     std::unreachable();
             }
+
+            void swap(compound_node_handle &node_in) noexcept
+            { return tag_node.swap(node_in.tag_node); }
+
+            friend void swap(compound_node_handle &x, compound_node_handle &y) noexcept
+            { x.swap(y); }
         };
-        //@formatter:on
+
+        struct compound_insert_result
+        {
+            compound::iterator   position;
+            bool                 inserted;
+            compound_node_handle node;
+        };
 
     private:
+        using node_type = compound_node_handle;
+        using insert_return_type = compound_insert_result;
+
         struct insert_args : util::forced_named_init<insert_args>
         {
             bool overwrite = false;
         };
 
-        std::optional<std::variant<compound *, list *>> parent;
-        compound                                        *top;
-        mem::pmr::recording_mem_resource                *pmr_rsrc;
+        std::variant<compound *, list *> parent;
+        compound                         *top;
+        std::pmr::memory_resource        *pmr_rsrc;
 
         // @formatter:off
         template<template<class> class Ref, class Cont>
@@ -112,18 +195,36 @@ namespace melon::nbt
         compound() = delete;
 
         // For building a compound from scratch
-        explicit compound(std::string_view name_in = "", int64_t max_size_in = -1, std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
+        explicit compound(std::string_view name_in, const allocator_type &alloc = { })
+            : compound(name_in, -1, nullptr, alloc)
+        { }
+
+        explicit compound(std::string_view name_in, int64_t max_size_in, const allocator_type &alloc = { })
+            : compound(name_in, max_size_in, nullptr, alloc)
+        { }
+
+        explicit compound(std::string_view name_in, const std::function<void(compound &)> &builder, const allocator_type &alloc = { })
+            : compound(name_in, -1, builder, alloc)
+        { }
+
+        explicit compound(std::string_view name_in, int64_t max_size_in, const std::function<void(compound &)> &builder, const allocator_type &alloc = { });
 
         // For parsing a binary NBT buffer
         // This function expects the raw buffer provided to it to be at least 8 bytes larger than the NBT data. The deflate methods in melon::util
         // will take care of this automatically.
-        explicit compound(std::unique_ptr<char[]> raw, size_t raw_size, std::pmr::memory_resource *pmr_rsrc_in = std::pmr::get_default_resource());
+        explicit compound(std::unique_ptr<char[]> raw, size_t raw_size, const allocator_type &alloc = { });
 
         iterator begin()
         { return iterator(tags.begin()); }
 
         iterator end()
         { return iterator(tags.end()); }
+
+        const_iterator cbegin()
+        { return const_iterator(tags.cbegin()); }
+
+        const_iterator cend()
+        { return const_iterator(tags.cend()); }
 
         template<tag_type_enum tag_type>
         requires is_nbt_container<tag_type>
@@ -191,10 +292,41 @@ namespace melon::nbt
         requires (tag_type == tag_list)
         std::optional<std::reference_wrapper<list>> create(std::string_view tag_name, tag_type_enum tag_type_in, const std::function<void(list &)> &builder = nullptr);
 
-        // There is no insert for container types. You can get one or create one only.
+        template<tag_type_enum tag_type>
+        requires is_nbt_container<tag_type>
+        std::pair<iterator, bool> insert(tag_cont_t<tag_type> *container, insert_args args = { .overwrite = false })
+        {
+            auto found = tags.find(std::string_view(*container->name));
+
+            if (found == tags.end() || args.overwrite)
+            {
+                node_type found_node;
+                if (found == tags.end()) found_node = extract(const_iterator(std::move(found)));
+
+                try
+                {
+                    adjust_byte_count(container->bytes());
+                    if ((depth + container->get_tree_depth()) > 512) throw std::runtime_error("Inserting NBT container would exceed maximum depth (>512).");
+
+                    auto &&[itr, success] = tags.insert(std::pair{ std::string_view(*container->name), container });
+                    container->change_properties({ .new_depth = depth + 1, .new_max_bytes = max_bytes, .new_parent = this, .new_top = top });
+
+                    return { iterator(std::move(itr)), success };
+                }
+                catch (...)
+                {
+                    adjust_byte_count(container->bytes() * -1);
+                    insert(std::move(found_node)); // Since we just extracted it there should be room to put it back without throwing... right?
+                    throw;
+                }
+            }
+
+            return { iterator(std::move(tags.end())), false };
+        }
+
         template<tag_type_enum tag_type, is_nbt_type_match<tag_type> V>
         requires is_nbt_primitive<tag_type>
-        void insert(const std::string_view tag_name, V value, insert_args args = { .overwrite = false })
+        std::pair<iterator, bool> insert(const std::string_view tag_name, V value, insert_args args = { .overwrite = false })
         {
             if (tag_name.size() >= std::numeric_limits<uint16_t>::max())
                 [[unlikely]] throw std::runtime_error("Attempted to add nbt primitive tag with too large name to NBT compound.");
@@ -216,32 +348,38 @@ namespace melon::nbt
 
             this->adjust_byte_count(tag_ptr->bytes());
 
-            const auto &[_, success] = tags.insert(std::pair{ std::string_view(*name_ptr), tag_ptr.get() });
-            if (!success) throw std::runtime_error("Failed to insert new tag into NBT compound.");
+            auto &&[itr, success] = tags.insert(std::pair{ std::string_view(*name_ptr), tag_ptr.get() });
 
             static_cast<void>(name_ptr.release());
             static_cast<void>(tag_ptr.release());
+
+            return { iterator(std::move(itr)), success };
         }
 
         template<tag_type_enum tag_type>
         requires (tag_type == tag_string)
-        void insert(const std::string_view tag_name, const std::string_view value, insert_args args = { .overwrite = false })
-        { insert_array_general<tag_type>(tag_name, value, args.overwrite); }
+        std::pair<iterator, bool> insert(const std::string_view tag_name, const std::string_view value, insert_args args = { .overwrite = false })
+        { return insert_array_general<tag_type>(tag_name, value, args.overwrite); }
 
         template<tag_type_enum tag_type, class V = std::remove_pointer_t<tag_prim_t<tag_type>>, std::size_t N>
         requires is_nbt_array<tag_type> && is_nbt_type_match<std::add_pointer_t<V>, tag_type>
-        void insert(const std::string_view tag_name, const std::array<V, N> &values, insert_args args = { .overwrite = false })
-        { insert_array_general<tag_type>(tag_name, values, args.overwrite); }
+        std::pair<iterator, bool> insert(const std::string_view tag_name, const std::array<V, N> &values, insert_args args = { .overwrite = false })
+        { return insert_array_general<tag_type>(tag_name, values, args.overwrite); }
 
         template<tag_type_enum tag_type, template<class, class...> class C = std::initializer_list, class V = std::remove_pointer_t<tag_prim_t<tag_type>>, class... N>
         requires is_nbt_array<tag_type> && is_nbt_type_match<std::add_pointer_t<V>, tag_type> && util::is_simple_iterable<C<V, N...>, V>
-        void insert(const std::string_view tag_name, const C<V, N...> &values, insert_args args = { .overwrite = false })
-        { insert_array_general<tag_type>(tag_name, values, args.overwrite); }
+        std::pair<iterator, bool> insert(const std::string_view tag_name, const C<V, N...> &values, insert_args args = { .overwrite = false })
+        { return insert_array_general<tag_type>(tag_name, values, args.overwrite); }
+
+        insert_return_type insert(node_type &&node_in);
+
+        node_type extract(const const_iterator &pos);
+        node_type extract(const std::string_view &key, tag_type_enum type_requested = tag_end);
 
         bool contains(const std::string_view key)
         { return tags.contains(key); }
 
-        void merge (compound &src);
+        void merge(compound &src);
 
         iterator erase(const iterator &&pos)
         { return iterator(destroy_tag(pos.itr)); }
@@ -281,11 +419,12 @@ namespace melon::nbt
         char *read(char *itr, const char *itr_end);
         void adjust_byte_count(int64_t by);
         tag_list_t::iterator destroy_tag(const tag_list_t::iterator &itr);
+        void destroy_tag(std::variant<compound *, list *, primitive_tag *> &tag_variant);
         void change_properties(container_property_args props);
 
         template<tag_type_enum tag_type, class V = std::remove_pointer_t<tag_prim_t<tag_type>>>
         requires is_nbt_type_match<V *, tag_type> && is_nbt_array<tag_type>
-        void insert_array_general(const std::string_view tag_name, const auto &values, bool overwrite = false)
+        std::pair<iterator, bool> insert_array_general(const std::string_view tag_name, const auto &values, bool overwrite = false)
         {
             if (tag_name.size() >= std::numeric_limits<uint16_t>::max())
                 [[unlikely]] throw std::runtime_error("Attempted to add array tag with too large name to NBT compound.");
@@ -314,12 +453,13 @@ namespace melon::nbt
                 for (uint32_t idx = 0; auto &&value: values)
                     array_ptr[idx++] = value;
 
-            const auto &[_, success] = tags.insert(std::pair{ std::string_view(*name_ptr), tag_ptr.get() });
-            if (!success) throw std::runtime_error("Failed to insert new tag into NBT compound.");
+            auto &&[itr, success] = tags.insert(std::pair{ std::string_view(*name_ptr), tag_ptr.get() });
 
             static_cast<void>(name_ptr.release());
             static_cast<void>(array_ptr.release());
             static_cast<void>(tag_ptr.release());
+
+            return { iterator(std::move(itr)), success };
         }
 
         tag_list_t tags;
@@ -330,6 +470,7 @@ namespace melon::nbt
     };
 
     static_assert(std::forward_iterator<compound::iterator>);
+    static_assert(std::forward_iterator<compound::const_iterator>);
 }
 
 #endif //MELON_NBT_COMPOUND_H

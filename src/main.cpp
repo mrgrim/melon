@@ -46,9 +46,10 @@ int main()
     std::cout << "Elapsed time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - start) << std::endl;
 
 #if NBT_DEBUG == true
-    auto                      pmr_buf   = malloc(40000);
+    auto                      pmr_buf   = new char[100 * 1024];
     //std::pmr::memory_resource *pmr_rsrc = new melon::mem::pmr::debug_monotonic_buffer_resource(pmr_buf, 40000);
-    std::pmr::memory_resource *pmr_rsrc = new std::pmr::monotonic_buffer_resource(pmr_buf, 40000);
+    auto monotonic_rsrc = new std::pmr::monotonic_buffer_resource(pmr_buf, 100 * 1024);
+    auto recording_rsrc = new mem::pmr::recording_mem_resource(monotonic_rsrc, true);
 #else
     auto result_alloc = new std::pmr::monotonic_buffer_resource(sizeof(nbt::compound) * 50000, std::pmr::get_default_resource());
 
@@ -72,7 +73,7 @@ int main()
     start = std::chrono::high_resolution_clock::now();
 
 #if NBT_DEBUG == true
-    auto parsed_nbt = nbt::compound(std::move(nbt_data_ptr), nbt_data_size);
+    auto parsed_nbt = mem::pmr::make_obj_using_pmr<nbt::compound>(recording_rsrc, std::move(nbt_data_ptr), nbt_data_size);
 #else
     for (int index = 0; index < 50000; index++)
     {
@@ -86,25 +87,29 @@ int main()
     std::cout << "Elapsed time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - start) << std::endl;
 
 #if NBT_DEBUG == true
-    std::cout << "Calculated level.dat size: " << parsed_nbt.bytes() << std::endl;
+    std::cout << "Calculated level.dat size: " << parsed_nbt->bytes() << std::endl;
 
-    parsed_nbt.insert<nbt::tag_float>("Test Value", 1.123f);
-    parsed_nbt.insert<nbt::tag_long>("Test Value 2", (int64_t)34198);
+    parsed_nbt->insert<nbt::tag_float>("Test Value", 1.123f);
+    parsed_nbt->insert<nbt::tag_long>("Test Value 2", (int64_t)34198);
 
-    parsed_nbt.insert<nbt::tag_float>("Test Value", 8.438f, { .overwrite = true });
+    parsed_nbt->insert<nbt::tag_float>("Test Value", 8.438f, { .overwrite = true });
 
-    parsed_nbt.insert<nbt::tag_int_array>("Test Int Deduced Initializer Array", { 1, 2, 3, 4, 5, 6 });
-    parsed_nbt.insert<nbt::tag_long_array>("Test Long Explicit Initializer Array", std::initializer_list<int64_t>{ 7, 8, 9, 10, 11, 12 });
-    parsed_nbt.insert<nbt::tag_byte_array>("Test Byte Vector Array", std::vector<int8_t>{ 13, 14, 15, 16, 17, 18 });
-    parsed_nbt.insert<nbt::tag_int_array>("Test Int Array Array", std::array<int32_t, 6>{ 19, 20, 21, 22, 23, 24 });
-    parsed_nbt.insert<nbt::tag_long_array>("Test Long Deque Array", std::deque<int64_t>{ 25, 26, 27, 28, 29, 30 });
-    parsed_nbt.insert<nbt::tag_byte_array>("Test Byte Set Array", std::set<int8_t>{ -1, -2, -3, -4, -5, -6 });
+    parsed_nbt->insert<nbt::tag_int_array>("Test Int Deduced Initializer Array", { 1, 2, 3, 4, 5, 6 });
+    parsed_nbt->insert<nbt::tag_long_array>("Test Long Explicit Initializer Array", std::initializer_list<int64_t>{ 7, 8, 9, 10, 11, 12 });
+    parsed_nbt->insert<nbt::tag_byte_array>("Test Byte Vector Array", std::vector<int8_t>{ 13, 14, 15, 16, 17, 18 });
+    parsed_nbt->insert<nbt::tag_int_array>("Test Int Array Array", std::array<int32_t, 6>{ 19, 20, 21, 22, 23, 24 });
+    parsed_nbt->insert<nbt::tag_long_array>("Test Long Deque Array", std::deque<int64_t>{ 25, 26, 27, 28, 29, 30 });
+    parsed_nbt->insert<nbt::tag_byte_array>("Test Byte Set Array", std::set<int8_t>{ -1, -2, -3, -4, -5, -6 });
 
-    auto &level_compound = parsed_nbt.find<nbt::tag_compound>("Data").value().get();
+    auto &level_compound = parsed_nbt->find<nbt::tag_compound>("Data").value().get();
 
-    auto end_gateway_list_opt = parsed_nbt.find<nbt::tag_compound>("Data")
+    auto end_gateway_list_opt = parsed_nbt->find<nbt::tag_compound>("Data")
                                           .find<nbt::tag_compound>("DragonFight")
                                           .find<nbt::tag_list>("Gateways");
+
+    auto &dragon_fight = parsed_nbt->find<nbt::tag_compound>("Data")
+                                   .find<nbt::tag_compound>("DragonFight").value().get();
+
 
     if (end_gateway_list_opt)
         for (nbt::list &end_gateway_list = *end_gateway_list_opt; auto &gateway: nbt::list::range<nbt::tag_int>{ end_gateway_list })
@@ -112,18 +117,18 @@ int main()
 
     std::cout << std::endl;
 
-    auto &enabled_datapacks = parsed_nbt.find<nbt::tag_compound>("Data")
+    auto &enabled_datapacks = parsed_nbt->find<nbt::tag_compound>("Data")
                                         .find<nbt::tag_compound>("DataPacks")
                                         .find<nbt::tag_list>("Enabled").value().get();
 
-    auto &datapacks = parsed_nbt.find<nbt::tag_compound>("Data")
+    auto &datapacks = parsed_nbt->find<nbt::tag_compound>("Data")
                                 .find<nbt::tag_compound>("DataPacks").value().get();
 
     for (const auto pack_name: nbt::list::range<nbt::tag_string>{ enabled_datapacks })
         std::cout << pack_name << std::endl;
 
-    auto my_compound = nbt::compound("");
-    my_compound.create<nbt::tag_compound>("Test Compound", [](nbt::compound &test_compound) {
+    auto my_compound = mem::pmr::make_obj_using_pmr<nbt::compound>(recording_rsrc, "");
+    my_compound->create<nbt::tag_compound>("Test Compound", [](nbt::compound &test_compound) {
         test_compound.insert<nbt::tag_string>("Test String", "This is a test string!");
         test_compound.insert<nbt::tag_float>("Test Float", 78.2945f);
 
@@ -181,11 +186,11 @@ int main()
         });
     });
 
-    std::cout << *(my_compound.to_snbt()) << std::endl;
-    std::cout << "my_compound size/depth: " << my_compound.bytes() << "/" << my_compound.get_tree_depth() << std::endl;
+    std::cout << *my_compound->to_snbt() << std::endl;
+    std::cout << "my_compound size/depth: " << my_compound->bytes() << "/" << my_compound->get_tree_depth() << std::endl;
 
     {
-        auto &test_compound = my_compound.find<nbt::tag_compound>("Test Compound").value().get();
+        auto &test_compound = my_compound->find<nbt::tag_compound>("Test Compound").value().get();
 
         for (auto itr = test_compound.begin(); itr != test_compound.end();)
         {
@@ -207,7 +212,7 @@ int main()
         }
     }
 
-    if (const auto &comp_result = my_compound.find("Test Compound", nbt::tag_compound))
+    if (const auto &comp_result = my_compound->find("Test Compound", nbt::tag_compound))
     {
         auto &[ckey, ctype, ctag] = comp_result.value();
         auto &test_compound       = std::get<nbt::tag_compound>(ctag).get();
@@ -226,10 +231,10 @@ int main()
         }
     }
 
-    std::cout << *(my_compound.to_snbt()) << std::endl;
-    std::cout << "my_compound size: " << my_compound.bytes() << std::endl;
+    std::cout << *my_compound->to_snbt() << std::endl;
+    std::cout << "my_compound size: " << my_compound->bytes() << std::endl;
 
-    auto &scheduled_events = parsed_nbt.find<nbt::tag_compound>("Data")
+    auto &scheduled_events = parsed_nbt->find<nbt::tag_compound>("Data")
                                        .find<nbt::tag_list>("ScheduledEvents").value().get();
 
     for (auto &&event: nbt::list::range<nbt::tag_compound>{ scheduled_events })
@@ -247,7 +252,7 @@ int main()
     std::cout << "One more but generically!" << std::endl;
     for (auto &&event: scheduled_events)
     {
-        auto name_res = std::get<nbt::tag_compound>(event).get().find("Name").value();
+        auto name_res  = std::get<nbt::tag_compound>(event).get().find("Name").value();
         auto ttime_res = std::get<nbt::tag_compound>(event).get().find("TriggerTime").value();
 
         std::cout << "Scheduled Event " << std::get<nbt::tag_string>(std::get<2>(name_res))
@@ -257,8 +262,8 @@ int main()
     {
         std::cout << "And a random repeat..." << std::endl;
         auto random_event = scheduled_events.at(std::rand() % scheduled_events.count);
-        auto name_res = std::get<nbt::tag_compound>(random_event).get().find("Name").value();
-        auto ttime_res = std::get<nbt::tag_compound>(random_event).get().find("TriggerTime").value();
+        auto name_res     = std::get<nbt::tag_compound>(random_event).get().find("Name").value();
+        auto ttime_res    = std::get<nbt::tag_compound>(random_event).get().find("TriggerTime").value();
         std::cout << "Scheduled Event " << std::get<nbt::tag_string>(std::get<2>(name_res))
                   << " at " << std::get<nbt::tag_long>(std::get<2>(ttime_res)) << std::endl;
     }
@@ -276,7 +281,7 @@ int main()
 
     try
     {
-        parsed_nbt.insert<nbt::tag_short>("Test Value 2", (int16_t)498, { .overwrite = true }); // Should catch attempt to write different type to existing tag
+        parsed_nbt->insert<nbt::tag_short>("Test Value 2", (int16_t)498); // Should catch attempt to overwrite
     }
     catch (std::exception &e)
     {
@@ -285,17 +290,34 @@ int main()
 
     std::string debug_out;
 
-    std::cout << "Time for the big merge!" << std::endl;
-    datapacks.merge(my_compound);
+    auto extracted_list = my_compound->find<nbt::tag_compound>("Test Compound").value().get().extract("Test Compound List");
+    std::get<nbt::tag_list>(extracted_list.mapped()).get().push<nbt::tag_compound>([](nbt::compound &tag) {
+        tag.insert<nbt::tag_string>("What Happened?", "Inserted While Extracted");
+        tag.insert<nbt::tag_double>("Pi", 3.14159);
+    });
+    datapacks.insert(std::move(extracted_list));
 
-    parsed_nbt.to_snbt(debug_out);
+    auto insertion_test_compound = mem::pmr::make_obj_using_pmr<nbt::compound>(recording_rsrc, "Inserted Compound", [](nbt::compound &compound) {
+       compound.insert<nbt::tag_string>("YAIS", "Yet Another Inserted String");
+    });
+
+    dragon_fight.insert<nbt::tag_compound>(insertion_test_compound);
+
+    std::cout << "Time for the big merge!" << std::endl;
+    dragon_fight.merge(*my_compound);
+
+    parsed_nbt->to_snbt(debug_out);
     std::cout << debug_out << std::endl;
 
     std::cout << "sizeof(void *): " << sizeof(void *) << std::endl;
 
-    std::cout << "Modified level.dat size/depth prior to deletion: " << parsed_nbt.bytes() << "/" << parsed_nbt.get_tree_depth() << std::endl;
-    //delete parsed_nbt;
-    //std::cout << "Deleted parsed NBT." << std::endl;
+    std::cout << "Modified level.dat size/depth prior to deletion: " << parsed_nbt->bytes() << "/" << parsed_nbt->get_tree_depth() << std::endl;
+
+    mem::pmr::destroy_obj_using_pmr(recording_rsrc, parsed_nbt);
+    std::cout << "Deleted parsed NBT." << std::endl;
+
+    mem::pmr::destroy_obj_using_pmr(recording_rsrc, my_compound);
+    std::cout << "Deleted my_compound." << std::endl;
 
 #else
     std::srand(std::time(0));
@@ -313,8 +335,12 @@ int main()
     delete result_alloc;
 #endif
 
-    delete (pmr_rsrc);
-    free(pmr_buf);
+    std::cout << recording_rsrc->get_records().size() << " allocations unaccounted for." << std::endl;
+
+    delete (recording_rsrc);
+    delete (monotonic_rsrc);
+
+    delete[] pmr_buf;
 
     return 0;
 }
