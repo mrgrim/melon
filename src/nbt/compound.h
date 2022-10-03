@@ -46,7 +46,8 @@ namespace melon::nbt
 
             iterator() : itr() { };
 
-            explicit iterator(tag_list_t::iterator &&itr_in) : itr(std::move(itr_in)) { };
+            explicit iterator(tag_list_t::iterator &itr_in) : itr(itr_in) { };
+            explicit iterator(tag_list_t::iterator &&itr_in) : itr(itr_in) { };
 
             value_type operator*() const { return fetch_value(*itr); };
             auto &operator++() { itr++; return *this; };
@@ -71,8 +72,11 @@ namespace melon::nbt
 
             const_iterator() : itr() { };
 
-            explicit const_iterator(tag_list_t::const_iterator &&itr_in) : itr(std::move(itr_in)) { };
-            explicit const_iterator(tag_list_t::iterator &&itr_in) : itr(std::move(itr_in)) { };
+            explicit const_iterator(tag_list_t::const_iterator &itr_in) : itr(itr_in) { };
+            explicit const_iterator(tag_list_t::iterator &itr_in) : itr(itr_in) { };
+
+            explicit const_iterator(tag_list_t::const_iterator &&itr_in) : itr(itr_in) { };
+            explicit const_iterator(tag_list_t::iterator &&itr_in) : itr(itr_in) { };
 
             value_type operator*() const { return fetch_value(*itr); };
             auto &operator++() { itr++; return *this; };
@@ -301,7 +305,7 @@ namespace melon::nbt
             if (found == tags.end() || args.overwrite)
             {
                 node_type found_node;
-                if (found == tags.end()) found_node = extract(const_iterator(std::move(found)));
+                if (found == tags.end()) found_node = extract(const_iterator(found));
 
                 try
                 {
@@ -321,7 +325,7 @@ namespace melon::nbt
                 }
             }
 
-            return { iterator(std::move(tags.end())), false };
+            return { iterator(tags.end()), false };
         }
 
         template<tag_type_enum tag_type, is_nbt_type_match<tag_type> V>
@@ -353,7 +357,7 @@ namespace melon::nbt
             static_cast<void>(name_ptr.release());
             static_cast<void>(tag_ptr.release());
 
-            return { iterator(std::move(itr)), success };
+            return { iterator(itr), success };
         }
 
         template<tag_type_enum tag_type>
@@ -459,7 +463,7 @@ namespace melon::nbt
             static_cast<void>(array_ptr.release());
             static_cast<void>(tag_ptr.release());
 
-            return { iterator(std::move(itr)), success };
+            return { iterator(itr), success };
         }
 
         tag_list_t tags;

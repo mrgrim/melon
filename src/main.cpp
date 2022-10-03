@@ -46,8 +46,7 @@ int main()
     std::cout << "Elapsed time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - start) << std::endl;
 
 #if NBT_DEBUG == true
-    auto                      pmr_buf   = new char[100 * 1024];
-    //std::pmr::memory_resource *pmr_rsrc = new melon::mem::pmr::debug_monotonic_buffer_resource(pmr_buf, 40000);
+    auto pmr_buf        = new char[100 * 1024];
     auto monotonic_rsrc = new std::pmr::monotonic_buffer_resource(pmr_buf, 100 * 1024);
     auto recording_rsrc = new mem::pmr::recording_mem_resource(monotonic_rsrc, true);
 #else
@@ -127,62 +126,63 @@ int main()
     for (const auto pack_name: nbt::list::range<nbt::tag_string>{ enabled_datapacks })
         std::cout << pack_name << std::endl;
 
-    auto my_compound = mem::pmr::make_obj_using_pmr<nbt::compound>(recording_rsrc, "");
-    my_compound->create<nbt::tag_compound>("Test Compound", [](nbt::compound &test_compound) {
-        test_compound.insert<nbt::tag_string>("Test String", "This is a test string!");
-        test_compound.insert<nbt::tag_float>("Test Float", 78.2945f);
+    auto my_compound = mem::pmr::make_obj_using_pmr<nbt::compound>(recording_rsrc, "", [](nbt::compound &new_compound) {
+        new_compound.create<nbt::tag_compound>("Test Compound", [](nbt::compound &test_compound) {
+            test_compound.insert<nbt::tag_string>("Test String", "This is a test string!");
+            test_compound.insert<nbt::tag_float>("Test Float", 78.2945f);
 
-        test_compound.create<nbt::tag_list>("Test Array List", nbt::tag_byte_array, [](nbt::list &test_list) {
-            test_list.reserve(2);
+            test_compound.create<nbt::tag_list>("Test Array List", nbt::tag_byte_array, [](nbt::list &test_list) {
+                test_list.reserve(2);
 
-            test_list.push<nbt::tag_byte_array>({ 1, 2, 3, 4, 5 });
-            test_list.push<nbt::tag_byte_array>(std::array<int8_t, 7>{ 23, 76, 63, 25, 36, 34, 87 });
-        });
-
-        test_compound.create<nbt::tag_list>("Test String List", nbt::tag_string, [](nbt::list &string_list) {
-            string_list.reserve(3);
-
-            string_list.push<nbt::tag_string>("Test String 1");
-            string_list.push<nbt::tag_string>("Test String 2");
-            string_list.push<nbt::tag_string>("Test String 3");
-        });
-
-        test_compound.create<nbt::tag_list>("Test Primitive List", nbt::tag_float, [](nbt::list &float_list) {
-            float_list.reserve(6);
-
-            float_list.push<nbt::tag_float>(2567.643f);
-            float_list.push<nbt::tag_float>(34.55462f);
-            float_list.push<nbt::tag_float>(345.6f);
-            float_list.push<nbt::tag_float>(543662.436f);
-            float_list.push<nbt::tag_float>(340.98657f);
-            float_list.push<nbt::tag_float>(14.83567f);
-        });
-
-        test_compound.create<nbt::tag_list>("Test List of Lists", nbt::tag_list, [](nbt::list &list_list) {
-            list_list.push<nbt::tag_list>(nbt::tag_double, [](nbt::list &list) {
-                list.push<nbt::tag_double>(5646.34367456);
-                list.push<nbt::tag_double>(34565.43654);
-                list.push<nbt::tag_double>(354.34543656754677);
+                test_list.push<nbt::tag_byte_array>({ 1, 2, 3, 4, 5 });
+                test_list.push<nbt::tag_byte_array>(std::array<int8_t, 7>{ 23, 76, 63, 25, 36, 34, 87 });
             });
 
-            list_list.push<nbt::tag_list>(nbt::tag_short, [](nbt::list &list) {
-                list.push<nbt::tag_short>((int16_t)-671);
-                list.push<nbt::tag_short>((int16_t)15783);
-                list.push<nbt::tag_short>((int16_t)42);
+            test_compound.create<nbt::tag_list>("Test String List", nbt::tag_string, [](nbt::list &string_list) {
+                string_list.reserve(3);
+
+                string_list.push<nbt::tag_string>("Test String 1");
+                string_list.push<nbt::tag_string>("Test String 2");
+                string_list.push<nbt::tag_string>("Test String 3");
             });
-        });
 
-        std::array<std::string_view, 4> names = { "Foo 1", "Foo 2", "Foo 3", "Foo 4" };
-        test_compound.create<nbt::tag_list>("Test Compound List", nbt::tag_compound, [names](nbt::list &name_list) {
-            name_list.reserve(names.size());
+            test_compound.create<nbt::tag_list>("Test Primitive List", nbt::tag_float, [](nbt::list &float_list) {
+                float_list.reserve(6);
 
-            for (auto &name: names)
-            {
-                name_list.push<nbt::tag_compound>([name](nbt::compound &name_compound) {
-                    name_compound.insert<nbt::tag_string>("Name", name);
-                    name_compound.insert<nbt::tag_short>("Rand", static_cast<int16_t>(std::rand() % std::numeric_limits<int16_t>::max()));
+                float_list.push<nbt::tag_float>(2567.643f);
+                float_list.push<nbt::tag_float>(34.55462f);
+                float_list.push<nbt::tag_float>(345.6f);
+                float_list.push<nbt::tag_float>(543662.436f);
+                float_list.push<nbt::tag_float>(340.98657f);
+                float_list.push<nbt::tag_float>(14.83567f);
+            });
+
+            test_compound.create<nbt::tag_list>("Test List of Lists", nbt::tag_list, [](nbt::list &list_list) {
+                list_list.push<nbt::tag_list>(nbt::tag_double, [](nbt::list &list) {
+                    list.push<nbt::tag_double>(5646.34367456);
+                    list.push<nbt::tag_double>(34565.43654);
+                    list.push<nbt::tag_double>(354.34543656754677);
                 });
-            }
+
+                list_list.push<nbt::tag_list>(nbt::tag_short, [](nbt::list &list) {
+                    list.push<nbt::tag_short>((int16_t)-671);
+                    list.push<nbt::tag_short>((int16_t)15783);
+                    list.push<nbt::tag_short>((int16_t)42);
+                });
+            });
+
+            std::array<std::string_view, 4> names = { "Foo 1", "Foo 2", "Foo 3", "Foo 4" };
+            test_compound.create<nbt::tag_list>("Test Compound List", nbt::tag_compound, [names](nbt::list &name_list) {
+                name_list.reserve(names.size());
+
+                for (auto &name: names)
+                {
+                    name_list.push<nbt::tag_compound>([name](nbt::compound &name_compound) {
+                        name_compound.insert<nbt::tag_string>("Name", name);
+                        name_compound.insert<nbt::tag_short>("Rand", static_cast<int16_t>(std::rand() % std::numeric_limits<int16_t>::max()));
+                    });
+                }
+            });
         });
     });
 
@@ -298,7 +298,7 @@ int main()
     datapacks.insert(std::move(extracted_list));
 
     auto insertion_test_compound = mem::pmr::make_obj_using_pmr<nbt::compound>(recording_rsrc, "Inserted Compound", [](nbt::compound &compound) {
-       compound.insert<nbt::tag_string>("YAIS", "Yet Another Inserted String");
+        compound.insert<nbt::tag_string>("YAIS", "Yet Another Inserted String");
     });
 
     dragon_fight.insert<nbt::tag_compound>(insertion_test_compound);
@@ -335,7 +335,8 @@ int main()
     delete result_alloc;
 #endif
 
-    std::cout << recording_rsrc->get_records().size() << " allocations unaccounted for." << std::endl;
+    std::cout << recording_rsrc->get_alloc_records().size() << " allocations unaccounted for." << std::endl;
+    std::cout << recording_rsrc->get_dealloc_records().size() << " total de-allocations." << std::endl;
 
     delete (recording_rsrc);
     delete (monotonic_rsrc);

@@ -44,7 +44,7 @@ namespace melon::nbt
             generic_iterator() : itr(), container(nullptr) { };
 
             explicit generic_iterator(tag_list_t::iterator &itr_in, list *container_in) : itr(itr_in), container(container_in) { };
-            explicit generic_iterator(tag_list_t::iterator &&itr_in, list *container_in) : itr(std::move(itr_in)), container(container_in) { };
+            explicit generic_iterator(tag_list_t::iterator &&itr_in, list *container_in) : itr(itr_in), container(container_in) { };
 
             tag_variant_t operator*() const
             { return fetch_value(*itr); }
@@ -105,7 +105,7 @@ namespace melon::nbt
             iterator() : itr(), container(nullptr) { };
 
             explicit iterator(tag_list_t::iterator &itr_in, list *container_in) : itr(itr_in), container(container_in) { };
-            explicit iterator(tag_list_t::iterator &&itr_in, list *container_in) : itr(std::move(itr_in)), container(container_in) { };
+            explicit iterator(tag_list_t::iterator &&itr_in, list *container_in) : itr(itr_in), container(container_in) { };
 
             tag_access_t<tag_type> &operator*() const requires is_nbt_primitive<tag_type> || is_nbt_container<tag_type>
             { return fetch_non_array_value(*itr); }
@@ -172,20 +172,20 @@ namespace melon::nbt
         iterator<tag_type> begin()
         {
             if (type != tag_type) [[unlikely]] throw std::runtime_error("Attempt to create iterator of invalid NBT list type.");
-            return iterator<tag_type>(std::move(tags.begin()), this);
+            return iterator<tag_type>(tags.begin(), this);
         }
 
         template<tag_type_enum tag_type> requires (tag_type != tag_end)
         iterator<tag_type> end()
         {
             if (type != tag_type) [[unlikely]] throw std::runtime_error("Attempt to create iterator of invalid NBT list type.");
-            return iterator<tag_type>(std::move(tags.end()), this);
+            return iterator<tag_type>(tags.end(), this);
         }
 
         generic_iterator begin()
-        { return generic_iterator(std::move(tags.begin()), this); }
+        { return generic_iterator(tags.begin(), this); }
         generic_iterator end()
-        { return generic_iterator(std::move(tags.end()), this); }
+        { return generic_iterator(tags.end(), this); }
 
         template<tag_type_enum tag_type>
         requires is_nbt_container<tag_type>

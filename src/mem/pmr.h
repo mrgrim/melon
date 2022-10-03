@@ -134,23 +134,6 @@ namespace melon::mem::pmr
         return std::unique_ptr<T, default_deleter<T>>(nullptr, default_deleter<T>(pmr_rsrc));
     }
 
-    class debug_monotonic_buffer_resource : public std::pmr::monotonic_buffer_resource
-    {
-    public:
-        debug_monotonic_buffer_resource(void *buffer, std::size_t buffer_size);
-        ~debug_monotonic_buffer_resource() override;
-
-    protected:
-        void *do_allocate(std::size_t bytes, std::size_t alignment) override;
-        void do_deallocate(void *p, std::size_t bytes, std::size_t alignment) override;
-        [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource &other) const noexcept override;
-
-    private:
-        int64_t total_bytes_allocated   = 0;
-        int64_t total_bytes_deallocated = 0;
-    };
-
-
     class recording_mem_resource : public std::pmr::memory_resource
     {
     public:
@@ -164,107 +147,21 @@ namespace melon::mem::pmr
             dealloc_records.reserve(initial_size);
         }
 
-        void start_recording()
-        { recording = true; }
+        void start_recording();
+        void stop_recording();
+        void deallocate_recorded();
 
-        void stop_recording()
-        {
-            recording = false;
-            alloc_records.clear();
-        }
-
-        void deallocate_recorded()
-        {
-            // Must go in reverse order as do_deallocate modifies the vector
-            for (auto & alloc_record : alloc_records)
-                do_unchecked_deallocate(alloc_record.ptr, alloc_record.bytes, alloc_record.alignment);
-
-            alloc_records.clear();
-        }
-
-        auto &get_records() { return alloc_records; }
+        auto &get_alloc_records() { return alloc_records; }
+        auto &get_dealloc_records() { return dealloc_records; }
 
     protected:
-        void *do_allocate(std::size_t bytes, std::size_t alignment) override
-        {
-            auto ptr = upstream_resource->allocate(bytes, alignment);
-
-            if (recording)
-            {
-                try
-                {
-                    alloc_records.push_back({ ptr, bytes, alignment });
-                }
-                catch (...)
-                {
-                    upstream_resource->deallocate(ptr, bytes, alignment);
-                    throw;
-                }
-            }
-
-            return ptr;
-        }
+        void *do_allocate(std::size_t bytes, std::size_t alignment) override;
 
         // This is designed to deallocate in reverse order of allocation. Random deallocations force a full vector search.
-        void do_deallocate(void *p, std::size_t bytes, std::size_t alignment) override
-        {
-            if (recording)
-            {
-                auto last_rec = alloc_records.back();
-
-                if (last_rec.ptr != p || last_rec.bytes != bytes || last_rec.alignment != alignment)
-                {
-                    bool found = false;
-
-                    for (auto rec_itr = alloc_records.begin(); rec_itr != alloc_records.end(); rec_itr++)
-                    {
-                        if (rec_itr->ptr == p && rec_itr->bytes == bytes && rec_itr->alignment == alignment)
-                        {
-                            alloc_records.erase(rec_itr);
-                            found = true;
-                            break;
-                        }
-
-                        if (rec_itr->ptr == p)
-                        {
-                            found = true;
-                            std::cout << "De-allocation with mismatched parameters!" << std::endl;
-                        }
-                    }
-
-                    for (auto rec_itr = dealloc_records.begin(); rec_itr != dealloc_records.end(); rec_itr++)
-                    {
-                        if (rec_itr->ptr == p && rec_itr->bytes == bytes && rec_itr->alignment == alignment)
-                        {
-                            found = true;
-                            std::cout << "Double de-allocation detected!" << std::endl;
-                            break;
-                        }
-
-                        if (rec_itr->ptr == p)
-                        {
-                            found = true;
-                            std::cout << "Double de-allocation with mismatched parameters!" << std::endl;
-                        }
-                    }
-
-                    if (!found)
-                        std::cout << "De-allocation without record!" << std::endl;
-                }
-                else
-                    alloc_records.pop_back();
-            }
-
-            upstream_resource->deallocate(p, bytes, alignment);
-        }
+        void do_deallocate(void *p, std::size_t bytes, std::size_t alignment) override;
 
         [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource &other) const noexcept override
-        {
-            auto other_cast = dynamic_cast<const recording_mem_resource *>(&other);
-            auto other_upstream = other_cast ? other_cast->upstream_resource : nullptr;
-
-            return (this == &other || upstream_resource == other_upstream);
-        }
+        { return (this == &other); }
 
     private:
         struct alloc_rec
@@ -275,9 +172,7 @@ namespace melon::mem::pmr
         };
 
         void do_unchecked_deallocate(void *p, std::size_t bytes, std::size_t alignment)
-        {
-            upstream_resource->deallocate(p, bytes, alignment);
-        }
+        { upstream_resource->deallocate(p, bytes, alignment); }
 
         std::pmr::memory_resource *upstream_resource;
         std::vector<alloc_rec>    alloc_records;

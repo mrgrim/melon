@@ -240,7 +240,7 @@ namespace melon::nbt
                 if constexpr (!std::is_same_v<std::remove_reference_t<decltype(tag)>, primitive_tag *>)
                     tag->change_properties({ .new_depth = this->depth + 1, .new_parent = this, .new_top = this->top });
 
-                return { iterator(std::move(pos)), success, std::move(node_in) };
+                return { iterator(pos), success, std::move(node_in) };
             }
             catch (...)
             {
@@ -373,20 +373,20 @@ namespace melon::nbt
         if (*src.pmr_rsrc != *this->pmr_rsrc) throw std::runtime_error("Attempt to merge NBT compounds with different allocators.");
 
         // Perform a first pass to check depth and size
-        size_t new_size  = 0;
+        int64_t new_size  = 0;
         size_t new_count = 0;
 
-        for (auto itr = src.tags.begin(); itr != src.tags.end(); itr++)
+        for (auto & itr : src.tags)
         {
-            if (!contains(itr->first))
+            if (!contains(itr.first))
             {
                 std::visit([this, &new_size, &new_count](auto tag) {
                     if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
                         if ((depth + tag->get_tree_depth()) > 512) throw std::runtime_error("Merge attempt would result in too deep structure (>512).");
 
-                    if ((new_size += tag->bytes()) > this->max_bytes) throw std::runtime_error("Merge attempt would result in too large structure.");
+                    if (this->max_bytes > -1 && (new_size += tag->bytes()) > this->max_bytes) throw std::runtime_error("Merge attempt would result in too large structure.");
                     new_count++;
-                }, itr->second);
+                }, itr.second);
             }
         }
 
@@ -472,7 +472,7 @@ namespace melon::nbt
 
         if (itr != tags.end())
         {
-            erase(iterator(std::move(itr)));
+            erase(iterator(itr));
             return 1;
         }
         else
