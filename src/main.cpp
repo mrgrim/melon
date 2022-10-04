@@ -200,7 +200,7 @@ int main()
             if (name == "Test String List")
             {
                 std::cout << "Erasing \"" << name << "\"." << std::endl;
-                itr = test_compound.erase(std::move(itr));
+                itr = test_compound.erase(itr);
             }
             else
                 itr++;

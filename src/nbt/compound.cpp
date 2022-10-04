@@ -31,7 +31,15 @@ namespace melon::nbt
         // TAG type + name length value + name length + END TAG type
         this->adjust_byte_count(sizeof(int8_t) + sizeof(uint16_t) + name_in.size() + sizeof(int8_t));
 
-        if (builder) builder(*this);
+        try
+        {
+            if (builder) builder(*this);
+        }
+        catch (...)
+        {
+            clear();
+            throw;
+        }
     }
 
     compound::compound(std::unique_ptr<char[]> raw, size_t raw_size, const allocator_type &alloc)

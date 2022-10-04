@@ -385,7 +385,7 @@ namespace melon::nbt
 
         void merge(compound &src);
 
-        iterator erase(const iterator &&pos)
+        iterator erase(const iterator &pos)
         { return iterator(destroy_tag(pos.itr)); }
 
         size_t erase(std::string_view &&key);

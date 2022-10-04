@@ -21,6 +21,7 @@ namespace melon::util
         friend D;
     };
 
+    // Taken from https://artificial-mind.net/blog/2020/10/31/constexpr-for
     template <auto Start, auto End, auto Inc, class F>
     constexpr void constexpr_for(F&& f)
     {
