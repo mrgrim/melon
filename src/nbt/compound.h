@@ -5,21 +5,16 @@
 #ifndef MELON_NBT_COMPOUND_H
 #define MELON_NBT_COMPOUND_H
 
-#include <cstdint>
-#include <string>
-#include <vector>
-#include <optional>
-#include <memory>
-#include <memory_resource>
-#include <iterator>
-#include "nbt.h"
-#include "unordered_dense.h"
-#include "util/concepts.h"
-#include "util/util.h"
-#include "mem/pmr.h"
+#include <unordered_map>
+#include <utility>
+#include <functional>
+#include "primitive.h"
+#include "impl.h"
 
 // TODO: Add SNBT parsing
 // TODO: Region file support
+// TODO: Const iterator for list, maybe?
+// TODO: Doxygen?
 
 namespace melon::nbt
 {
@@ -29,7 +24,7 @@ namespace melon::nbt
     {
     public:
         using allocator_type = std::pmr::polymorphic_allocator<>;
-        using tag_list_t = std::pmr::unordered_map<std::string_view, std::variant<compound *, list *, primitive_tag *>>;
+        using tag_list_t = std::pmr::unordered_map<std::string_view, std::variant<compound *, list *, primitive *>>;
 
         // @formatter:off
         class iterator
@@ -136,9 +131,9 @@ namespace melon::nbt
                     return std::reference_wrapper<compound>(*std::get<compound *>(tag_node.mapped()));
                 else if (std::holds_alternative<list *>(tag_node.mapped()))
                     return std::reference_wrapper<list>(*std::get<list *>(tag_node.mapped()));
-                else if (std::holds_alternative<primitive_tag *>(tag_node.mapped()))
+                else if (std::holds_alternative<primitive *>(tag_node.mapped()))
                 {
-                    auto prim_ptr = std::get<primitive_tag *>(tag_node.mapped());
+                    auto prim_ptr = std::get<primitive *>(tag_node.mapped());
                     return prim_ptr->get_generic();
                 }
                 else
@@ -255,7 +250,7 @@ namespace melon::nbt
 
         template<tag_type_enum tag_type>
         requires is_nbt_array<tag_type>
-        [[nodiscard]] std::optional<typename std::invoke_result<decltype(&primitive_tag::template get<tag_type>), primitive_tag *>::type>
+        [[nodiscard]] std::optional<typename std::invoke_result<decltype(&primitive::template get<tag_type>), primitive *>::type>
         find(const std::string_view &tag_name) noexcept
         {
             auto itr = tags.find(tag_name);
@@ -420,12 +415,12 @@ namespace melon::nbt
         explicit compound(std::variant<compound *, list *> parent_in, std::string_view name_in);
         explicit compound(char **itr_in, const char *itr_end, std::variant<compound *, list *> parent_in, mem::pmr::unique_ptr<std::pmr::string> name_in);
 
-        std::pair<mem::pmr::unique_ptr<std::pmr::string>, mem::pmr::unique_ptr<primitive_tag>> new_primitive(std::string_view, tag_type_enum, bool overwrite = false);
+        std::pair<mem::pmr::unique_ptr<std::pmr::string>, mem::pmr::unique_ptr<primitive>> new_primitive(std::string_view, tag_type_enum, bool overwrite = false);
         char *read(char *itr, const char *itr_end);
         void adjust_byte_count(int64_t by);
         tag_list_t::iterator destroy_tag(const tag_list_t::iterator &itr);
-        void destroy_tag(std::variant<compound *, list *, primitive_tag *> &tag_variant);
-        void change_properties(container_property_args props);
+        void destroy_tag(std::variant<compound *, list *, primitive *> &tag_variant);
+        void change_properties(impl::container_property_args props);
 
         char *to_binary(char *itr);
 

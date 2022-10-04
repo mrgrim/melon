@@ -5,18 +5,10 @@
 #ifndef MELON_NBT_LIST_H
 #define MELON_NBT_LIST_H
 
-#include <cstdint>
-#include <iterator>
-#include <memory>
-#include <string>
-#include <utility>
-#include <vector>
-#include <memory>
-#include <memory_resource>
 #include <cassert>
 #include <functional>
-#include "nbt.h"
-#include "util/concepts.h"
+#include "primitive.h"
+#include "impl.h"
 
 namespace melon::nbt
 {
@@ -80,7 +72,7 @@ namespace melon::nbt
                         return std::reference_wrapper<list>(*static_cast<list *>(value_in));
                     else
                     {
-                        auto prim_ptr = static_cast<primitive_tag *>(value_in);
+                        auto prim_ptr = static_cast<primitive *>(value_in);
                         return prim_ptr->get_generic();
                     }
                 }
@@ -250,7 +242,7 @@ namespace melon::nbt
         requires is_nbt_primitive<tag_type> && is_nbt_type_match<V, tag_type>
         void insert(const generic_iterator &itr, V &&value)
         {
-            auto tag_ptr = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type());
+            auto tag_ptr = mem::pmr::make_unique<primitive>(pmr_rsrc, type());
             adjust_byte_count(tag_ptr->bytes({ .full_tag = false }));
 
             if constexpr (tag_type == tag_byte)
@@ -357,7 +349,7 @@ namespace melon::nbt
 
         char *read(char *itr, const char *itr_end);
         void adjust_byte_count(int64_t by);
-        void change_properties(container_property_args props);
+        void change_properties(impl::container_property_args props);
 
         void to_snbt(std::string &out) const;
         char *to_binary(char *itr) const;
@@ -366,7 +358,7 @@ namespace melon::nbt
         void push_array_general(const generic_iterator &itr, const auto &values)
         {
             auto array_ptr = mem::pmr::make_unique<V[]>(pmr_rsrc, values.size() + (padding_size / sizeof(V)));
-            auto tag_ptr   = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type());
+            auto tag_ptr   = mem::pmr::make_unique<primitive>(pmr_rsrc, type());
 
             tag_ptr->set_size(values.size());
             adjust_byte_count(tag_ptr->bytes({ .full_tag = false }));

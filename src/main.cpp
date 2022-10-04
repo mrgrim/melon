@@ -12,8 +12,7 @@
 #include "util/deflate.h"
 #include "util/file.h"
 #include "mem/pmr.h"
-#include "nbt/compound.h"
-#include "nbt/list.h"
+#include "nbt/nbt.h"
 
 using namespace melon;
 

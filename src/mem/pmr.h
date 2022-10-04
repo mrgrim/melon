@@ -7,8 +7,6 @@
 
 #include <memory>
 #include <memory_resource>
-#include <ranges>
-#include <vector>
 
 namespace melon::mem::pmr
 {

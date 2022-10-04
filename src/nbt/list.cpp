@@ -2,11 +2,9 @@
 // Created by MrGrim on 8/14/2022.
 //
 
-#include <optional>
-#include <stdexcept>
-#include "nbt.h"
 #include "compound.h"
 #include "list.h"
+#include "snbt.h"
 
 namespace melon::nbt
 {
@@ -92,7 +90,7 @@ namespace melon::nbt
         return ret;
     }
 
-    void list::change_properties(container_property_args props)
+    void list::change_properties(impl::container_property_args props)
     {
         if (props.new_parent)
         {
@@ -141,7 +139,7 @@ namespace melon::nbt
             {
                 auto tag_ptr = static_cast<T *>(itr.fetch_raw_ptr());
 
-                if constexpr (std::is_same_v<T, primitive_tag>)
+                if constexpr (std::is_same_v<T, primitive>)
                 {
                     adjust_byte_count(tag_ptr->bytes({ .full_tag = false }) * -1);
 
@@ -167,7 +165,7 @@ namespace melon::nbt
         else if (type() == tag_compound)
             return clear_loop.template operator()<compound>();
         else
-            return clear_loop.template operator()<primitive_tag>();
+            return clear_loop.template operator()<primitive>();
     }
 
     tag_variant_t list::at(int idx)
@@ -178,7 +176,7 @@ namespace melon::nbt
             return std::reference_wrapper<list>(*static_cast<list *>(tags.at(idx)));
         else
         {
-            auto prim_ptr = static_cast<primitive_tag *>(tags.at(idx));
+            auto prim_ptr = static_cast<primitive *>(tags.at(idx));
             return prim_ptr->get_generic();
         }
     }
@@ -189,7 +187,7 @@ namespace melon::nbt
 
         auto itr_start = itr;
 
-        auto count = read_var<int32_t>(itr);
+        auto count = impl::read_var<int32_t>(itr);
 
         if (count < 0) [[unlikely]] throw std::runtime_error("Found list with negative length while parsing binary NBT data.");
         if (type() == tag_end && count > 0) throw std::runtime_error("Found populated list with no type.");
@@ -229,7 +227,7 @@ namespace melon::nbt
                 if ((itr + tag_properties[type()].size + padding_size) >= itr_end)
                     [[unlikely]] throw std::runtime_error("Attempt to read past buffer while parsing binary NBT data.");
 
-                tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type(), read_tag_primitive(&itr, type())));
+                tags.push_back(mem::pmr::make_obj_using_pmr<primitive>(pmr_rsrc, type(), impl::read_tag_primitive(&itr, type())));
             }
         }
         else if (tag_properties[type()].category & (cat_array | cat_string))
@@ -238,8 +236,8 @@ namespace melon::nbt
             {
                 for (int32_t index = 0; index < count; index++)
                 {
-                    auto [str_ptr, str_len] = read_tag_string(&itr, itr_end, pmr_rsrc);
-                    tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type(), std::bit_cast<uint64_t>(str_ptr.get()), nullptr, static_cast<size_t>(str_len)));
+                    auto [str_ptr, str_len] = impl::read_tag_string(&itr, itr_end, pmr_rsrc);
+                    tags.push_back(mem::pmr::make_obj_using_pmr<primitive>(pmr_rsrc, type(), std::bit_cast<uint64_t>(str_ptr.get()), nullptr, static_cast<size_t>(str_len)));
                     static_cast<void>(str_ptr.release());
                 }
             }
@@ -247,10 +245,10 @@ namespace melon::nbt
             {
                 for (int32_t index = 0; index < count; index++)
                 {
-                    auto [array_ptr, array_len] = read_tag_array(&itr, itr_end, type(), pmr_rsrc);
+                    auto [array_ptr, array_len] = impl::read_tag_array(&itr, itr_end, type(), pmr_rsrc);
                     if (array_len < 0) [[unlikely]] throw std::runtime_error("Found array with negative length while parsing binary NBT data.");
 
-                    tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type(), std::bit_cast<uint64_t>(array_ptr.get()), nullptr, static_cast<size_t>(array_len)));
+                    tags.push_back(mem::pmr::make_obj_using_pmr<primitive>(pmr_rsrc, type(), std::bit_cast<uint64_t>(array_ptr.get()), nullptr, static_cast<size_t>(array_len)));
                     static_cast<void>(array_ptr.release());
                 }
             }
@@ -288,7 +286,7 @@ namespace melon::nbt
             else if (type() == tag_compound)
                 process_entries.template operator()<compound>(tags);
             else
-                process_entries.template operator()<primitive_tag>(tags);
+                process_entries.template operator()<primitive>(tags);
 
             out.back() = ']';
         }
@@ -322,7 +320,7 @@ namespace melon::nbt
             else if (tag_type == tag_compound)
                 process_entries.template operator()<compound>(tags);
             else
-                process_entries.template operator()<primitive_tag>(tags);
+                process_entries.template operator()<primitive>(tags);
         }
         else
         {

@@ -5,7 +5,6 @@
 #ifndef LODE_UTIL_DEFLATE_H
 #define LODE_UTIL_DEFLATE_H
 
-#include <span>
 #include "libdeflate.h"
 
 namespace melon::util {

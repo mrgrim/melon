@@ -2,14 +2,9 @@
 // Created by MrGrim on 8/14/2022.
 //
 
-#include <cstring>
-#include <string_view>
-#include <memory>
-#include <memory_resource>
-#include "nbt.h"
 #include "list.h"
 #include "compound.h"
-#include "mem/pmr.h"
+#include "snbt.h"
 
 // For details on the file format go to: https://minecraft.fandom.com/wiki/NBT_format#Binary_format
 
@@ -58,7 +53,7 @@ namespace melon::nbt
 
         try
         {
-            auto name_len = read_var<uint16_t>(itr);
+            auto name_len = impl::read_var<uint16_t>(itr);
             *name = std::string_view(itr, name_len);
 
             itr += name_len;
@@ -145,7 +140,7 @@ namespace melon::nbt
 
         while ((itr_end - itr) >= 2 && tag_type != tag_end)
         {
-            auto name_len = read_var<uint16_t>(itr);
+            auto name_len = impl::read_var<uint16_t>(itr);
 
             if ((itr + name_len + padding_size) >= itr_end)
                 [[unlikely]] throw std::runtime_error("Attempt to read past buffer while parsing binary NBT data.");
@@ -177,24 +172,24 @@ namespace melon::nbt
             }
             else if (tag_properties[tag_type].category == cat_primitive)
             {
-                create_and_insert.template operator()<primitive_tag>(tag_type, read_tag_primitive(&itr, tag_type), tag_name.get());
+                create_and_insert.template operator()<primitive>(tag_type, impl::read_tag_primitive(&itr, tag_type), tag_name.get());
                 static_cast<void>(tag_name.release());
             }
             else if (tag_properties[tag_type].category & (cat_array | cat_string))
             {
                 if (tag_type == tag_string)
                 {
-                    auto [str_ptr, str_len] = read_tag_string(&itr, itr_end, pmr_rsrc);
-                    create_and_insert.template operator()<primitive_tag>(tag_type, std::bit_cast<uint64_t>(str_ptr.get()), tag_name.get(), static_cast<uint32_t>(str_len));
+                    auto [str_ptr, str_len] = impl::read_tag_string(&itr, itr_end, pmr_rsrc);
+                    create_and_insert.template operator()<primitive>(tag_type, std::bit_cast<uint64_t>(str_ptr.get()), tag_name.get(), static_cast<uint32_t>(str_len));
                     static_cast<void>(tag_name.release());
                     static_cast<void>(str_ptr.release());
                 }
                 else
                 {
-                    auto [array_ptr, array_len] = read_tag_array(&itr, itr_end, tag_type, pmr_rsrc);
+                    auto [array_ptr, array_len] = impl::read_tag_array(&itr, itr_end, tag_type, pmr_rsrc);
                     if (array_len < 0) [[unlikely]] throw std::runtime_error("Found array with negative length while parsing binary NBT data.");
 
-                    create_and_insert.template operator()<primitive_tag>(tag_type, std::bit_cast<uint64_t>(array_ptr.get()), tag_name.get(), static_cast<uint32_t>(array_len));
+                    create_and_insert.template operator()<primitive>(tag_type, std::bit_cast<uint64_t>(array_ptr.get()), tag_name.get(), static_cast<uint32_t>(array_len));
                     static_cast<void>(tag_name.release());
                     static_cast<void>(array_ptr.release());
                 }
@@ -220,7 +215,7 @@ namespace melon::nbt
                 return std::tuple{ std::string_view(*tag->name.get()), tag_compound, tag_variant_t{ std::reference_wrapper(*tag) }};
             else if constexpr (std::is_same_v<decltype(tag), list *>)
                 return std::tuple{ std::string_view(*tag->name.get()), tag_list, tag_variant_t{ std::reference_wrapper(*tag) }};
-            else if constexpr (std::is_same_v<decltype(tag), primitive_tag *>)
+            else if constexpr (std::is_same_v<decltype(tag), primitive *>)
                 return std::tuple{ std::string_view(*tag->name), tag->type(), tag->get_generic() };
 
             std::unreachable();
@@ -236,7 +231,7 @@ namespace melon::nbt
         auto tag_value = node_in.tag_node.mapped();
 
         return std::visit([this, &node_in](auto tag) -> insert_return_type  {
-            if constexpr (!std::is_same_v<std::remove_reference_t<decltype(tag)>, primitive_tag *>)
+            if constexpr (!std::is_same_v<std::remove_reference_t<decltype(tag)>, primitive *>)
                 if ((this->depth + tag->get_tree_depth()) > 512) throw std::runtime_error("Insertion would result in too deep structure (>512).");
 
             this->adjust_byte_count(tag->bytes());
@@ -245,7 +240,7 @@ namespace melon::nbt
             {
                 auto [pos, success, handle] = tags.insert(std::move(node_in.tag_node));
 
-                if constexpr (!std::is_same_v<std::remove_reference_t<decltype(tag)>, primitive_tag *>)
+                if constexpr (!std::is_same_v<std::remove_reference_t<decltype(tag)>, primitive *>)
                     tag->change_properties({ .new_depth = this->depth + 1, .new_parent = this, .new_top = this->top });
 
                 return { iterator(pos), success, std::move(node_in) };
@@ -401,7 +396,7 @@ namespace melon::nbt
         return ++itr;
     }
 
-    std::pair<mem::pmr::unique_ptr<std::pmr::string>, mem::pmr::unique_ptr<primitive_tag>>
+    std::pair<mem::pmr::unique_ptr<std::pmr::string>, mem::pmr::unique_ptr<primitive>>
     compound::new_primitive(std::string_view tag_name, tag_type_enum tag_type, bool overwrite)
     {
         const auto &itr = tags.find(tag_name);
@@ -415,7 +410,7 @@ namespace melon::nbt
         }
 
         auto str_ptr = mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, tag_name);
-        auto tag_ptr = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, tag_type, 0, str_ptr.get());
+        auto tag_ptr = mem::pmr::make_unique<primitive>(pmr_rsrc, tag_type, 0, str_ptr.get());
 
         return { std::move(str_ptr), std::move(tag_ptr) };
     }
@@ -454,7 +449,7 @@ namespace melon::nbt
             if (!contains(itr.first))
             {
                 std::visit([this, &new_size, &new_count](auto tag) {
-                    if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
+                    if constexpr (!std::is_same_v<primitive *, std::remove_reference_t<decltype(tag)>>)
                         if ((depth + tag->get_tree_depth()) > 512) throw std::runtime_error("Merge attempt would result in too deep structure (>512).");
 
                     if (this->max_bytes > -1 && (new_size += tag->bytes()) > this->max_bytes) throw std::runtime_error("Merge attempt would result in too large structure.");
@@ -481,7 +476,7 @@ namespace melon::nbt
                         src.adjust_byte_count(tag->bytes() * -1);
                         itr = src.tags.erase(itr);
 
-                        if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
+                        if constexpr (!std::is_same_v<primitive *, std::remove_reference_t<decltype(tag)>>)
                             tag->change_properties({ .new_depth = depth + 1, .new_max_bytes = max_bytes, .new_parent = this, .new_top = top });
                     }
                     else
@@ -502,7 +497,7 @@ namespace melon::nbt
             std::visit([&ret](auto &&tag) {
                 uint16_t child_depth;
 
-                if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
+                if constexpr (!std::is_same_v<primitive *, std::remove_reference_t<decltype(tag)>>)
                     if ((child_depth = tag->get_tree_depth()) > ret) ret = child_depth;
             }, itr.second);
         }
@@ -510,7 +505,7 @@ namespace melon::nbt
         return ret;
     }
 
-    void compound::change_properties(container_property_args props)
+    void compound::change_properties(impl::container_property_args props)
     {
         if (props.new_parent)
         {
@@ -532,7 +527,7 @@ namespace melon::nbt
             for (auto itr: tags)
             {
                 std::visit([&props](auto &&tag) {
-                    if constexpr (!std::is_same_v<primitive_tag *, std::remove_reference_t<decltype(tag)>>)
+                    if constexpr (!std::is_same_v<primitive *, std::remove_reference_t<decltype(tag)>>)
                         tag->change_properties(props);
                 }, itr.second);
             }
@@ -573,11 +568,11 @@ namespace melon::nbt
         return ret_itr;
     }
 
-    void compound::destroy_tag(std::variant<compound *, list *, primitive_tag *> &tag_variant)
+    void compound::destroy_tag(std::variant<compound *, list *, primitive *> &tag_variant)
     {
         std::visit([this](auto tag_ptr) {
 
-            if constexpr (std::is_same_v<decltype(tag_ptr), primitive_tag *>)
+            if constexpr (std::is_same_v<decltype(tag_ptr), primitive *>)
             {
                 this->adjust_byte_count(static_cast<int64_t>(tag_ptr->bytes()) * -1);
 
@@ -612,9 +607,9 @@ namespace melon::nbt
             return { std::string_view(value_in.first), tag_compound, std::reference_wrapper<compound>(*std::get<compound *>(value_in.second)) };
         else if (std::holds_alternative<list *>(value_in.second))
             return { std::string_view(value_in.first), tag_list, std::reference_wrapper<list>(*std::get<list *>(value_in.second)) };
-        else if (std::holds_alternative<primitive_tag *>(value_in.second))
+        else if (std::holds_alternative<primitive *>(value_in.second))
         {
-            auto prim_ptr = std::get<primitive_tag *>(value_in.second);
+            auto prim_ptr = std::get<primitive *>(value_in.second);
             return { std::string_view(value_in.first), prim_ptr->type(), prim_ptr->get_generic() };
         }
         else
@@ -627,9 +622,9 @@ namespace melon::nbt
             return { std::string_view(value_in.first), tag_compound, std::reference_wrapper<compound>(*std::get<compound *>(value_in.second)) };
         else if (std::holds_alternative<list *>(value_in.second))
             return { std::string_view(value_in.first), tag_list, std::reference_wrapper<list>(*std::get<list *>(value_in.second)) };
-        else if (std::holds_alternative<primitive_tag *>(value_in.second))
+        else if (std::holds_alternative<primitive *>(value_in.second))
         {
-            auto prim_ptr = std::get<primitive_tag *>(value_in.second);
+            auto prim_ptr = std::get<primitive *>(value_in.second);
             return { std::string_view(value_in.first), prim_ptr->type(), prim_ptr->get_generic() };
         }
         else

@@ -5,7 +5,6 @@
 #include <string_view>
 #include <filesystem>
 #include <fstream>
-#include <optional>
 #include <memory>
 #include "file.h"
 
