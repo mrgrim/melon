@@ -184,7 +184,6 @@ namespace melon::nbt
         };
 
     public:
-        const tag_type_enum tag_type;
         std::pmr::string *const name;
 
         union
@@ -218,8 +217,6 @@ namespace melon::nbt
         primitive_tag(primitive_tag &&) = delete;
         primitive_tag &operator=(primitive_tag &&) = delete;
 
-        void to_snbt(std::string &out);
-
         template<tag_type_enum tag_type>
         requires is_nbt_primitive<tag_type>
         auto &get()
@@ -243,13 +240,13 @@ namespace melon::nbt
         auto get()
         {
             if constexpr (tag_type == tag_string)
-                return std::string_view{ value.tag_string, size_v };
+                return std::string_view{ value.tag_string, static_cast<size_t>(size_v) };
             else if constexpr (tag_type == tag_byte_array)
-                return std::span(value.tag_byte_array, size_v);
+                return std::span(value.tag_byte_array, static_cast<size_t>(size_v));
             else if constexpr (tag_type == tag_int_array)
-                return std::span(value.tag_int_array, size_v);
+                return std::span(value.tag_int_array, static_cast<size_t>(size_v));
             else if constexpr (tag_type == tag_long_array)
-                return std::span(value.tag_long_array, size_v);
+                return std::span(value.tag_long_array, static_cast<size_t>(size_v));
         }
 
         tag_variant_t get_generic();
@@ -258,14 +255,17 @@ namespace melon::nbt
         {
             size_t name_size = params.full_tag ? sizeof(int8_t) + sizeof(uint16_t) + name->size() : 0;
             if (size() == 0)
-                return name_size + tag_properties[tag_type].size;
-            else if (tag_type == tag_string)
+                return name_size + tag_properties[type()].size;
+            else if (type() == tag_string)
                 return name_size + sizeof(uint16_t) + size();
             else
-                return name_size + sizeof(int32_t) + (size() * tag_properties[tag_type].size);
+                return name_size + sizeof(int32_t) + (size() * tag_properties[type()].size);
         }
 
-        [[nodiscard]] size_t size() const
+        [[nodiscard]] tag_type_enum type() const
+        { return type_v; }
+
+        [[nodiscard]] int32_t size() const
         { return size_v; }
 
     private:
@@ -277,16 +277,21 @@ namespace melon::nbt
         friend auto mem::pmr::make_obj_using_pmr(std::pmr::memory_resource *pmr_rsrc, Args &&... args)
         requires (!std::is_array_v<T>);
 
+        const tag_type_enum type_v;
+
         // Must be set to 0 if not a string or array type
-        size_t size_v;
+        int32_t size_v;
 
         explicit primitive_tag(tag_type_enum type_in = tag_byte, uint64_t value_in = 0, std::pmr::string *name_in = nullptr, size_t size_in = 0) noexcept
-                : tag_type(type_in), name(name_in), size_v(size_in)
+                : name(name_in), type_v(type_in), size_v(size_in)
         { value.generic = value_in; }
 
         // Caller must take care to allocate new memory and assign it to the generic pointer
-        void set_size(uint32_t new_size)
+        void set_size(int32_t new_size)
         { size_v = new_size; }
+
+        void to_snbt(std::string &out) const;
+        char *to_binary(char *itr) const;
     };
 
     template<class T>

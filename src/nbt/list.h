@@ -74,9 +74,9 @@ namespace melon::nbt
             {
                 if (container != nullptr)
                 {
-                    if (container->type == tag_compound)
+                    if (container->type() == tag_compound)
                         return std::reference_wrapper<compound>(*static_cast<compound *>(value_in));
-                    else if (container->type == tag_list)
+                    else if (container->type() == tag_list)
                         return std::reference_wrapper<list>(*static_cast<list *>(value_in));
                     else
                     {
@@ -154,8 +154,6 @@ namespace melon::nbt
 
     public:
         mem::pmr::unique_ptr<std::pmr::string> name;
-        const tag_type_enum                    type  = tag_end;
-        int32_t                                count = 0;
 
         list() = delete;
 
@@ -165,20 +163,18 @@ namespace melon::nbt
         list(list &&) = delete;
         list &operator=(list &&) = delete;
 
-        void to_snbt(std::string &out);
-
         // @formatter:off
         template<tag_type_enum tag_type> requires (tag_type != tag_end)
         iterator<tag_type> begin()
         {
-            if (type != tag_type) [[unlikely]] throw std::runtime_error("Attempt to create iterator of invalid NBT list type.");
+            if (type() != tag_type) [[unlikely]] throw std::runtime_error("Attempt to create iterator of invalid NBT list type.");
             return iterator<tag_type>(tags.begin(), this);
         }
 
         template<tag_type_enum tag_type> requires (tag_type != tag_end)
         iterator<tag_type> end()
         {
-            if (type != tag_type) [[unlikely]] throw std::runtime_error("Attempt to create iterator of invalid NBT list type.");
+            if (type() != tag_type) [[unlikely]] throw std::runtime_error("Attempt to create iterator of invalid NBT list type.");
             return iterator<tag_type>(tags.end(), this);
         }
 
@@ -191,7 +187,7 @@ namespace melon::nbt
         requires is_nbt_container<tag_type>
         auto &at(int idx)
         {
-            if (type != tag_type) [[unlikely]] throw std::runtime_error("Attempted access of invalid NBT list type element.");
+            if (type() != tag_type) [[unlikely]] throw std::runtime_error("Attempted access of invalid NBT list type element.");
             auto cont_ptr = static_cast<tag_cont_t<tag_type> *>(tags.at(idx));
             return *cont_ptr;
         }
@@ -200,7 +196,7 @@ namespace melon::nbt
         requires is_nbt_primitive<tag_type>
         auto &at(int idx)
         {
-            if (type != tag_type) [[unlikely]] throw std::runtime_error("Attempted access of invalid NBT list type element.");
+            if (type() != tag_type) [[unlikely]] throw std::runtime_error("Attempted access of invalid NBT list type element.");
             return static_cast<tag_cont_t<tag_type> *>(tags.at(idx))->template get<tag_type>();
         }
 
@@ -208,7 +204,7 @@ namespace melon::nbt
         requires is_nbt_array<tag_type>
         auto at(int idx)
         {
-            if (type != tag_type) [[unlikely]] throw std::runtime_error("Attempted access of invalid NBT list type element.");
+            if (type() != tag_type) [[unlikely]] throw std::runtime_error("Attempted access of invalid NBT list type element.");
             return static_cast<tag_cont_t<tag_type> *>(tags.at(idx))->template get<tag_type>();
         }
         // @formatter:on
@@ -242,7 +238,6 @@ namespace melon::nbt
                 throw;
             }
 
-            count++;
             return *container.release();
         }
 
@@ -255,7 +250,7 @@ namespace melon::nbt
         requires is_nbt_primitive<tag_type> && is_nbt_type_match<V, tag_type>
         void insert(const generic_iterator &itr, V &&value)
         {
-            auto tag_ptr = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type);
+            auto tag_ptr = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type());
             adjust_byte_count(tag_ptr->bytes({ .full_tag = false }));
 
             if constexpr (tag_type == tag_byte)
@@ -273,7 +268,6 @@ namespace melon::nbt
 
             tags.insert(itr.itr, static_cast<tag_cont_t<tag_type> *>(tag_ptr.get()));
             static_cast<void>(tag_ptr.release());
-            count++;
         }
 
         template<tag_type_enum tag_type, class V = tag_prim_t<tag_type>>
@@ -285,9 +279,8 @@ namespace melon::nbt
         requires (tag_type == tag_string)
         void insert(const generic_iterator &itr, const std::string_view &str_in)
         {
-            if (tag_type != this->type) throw std::runtime_error("Attempt to push value of wrong type to NBT list.");
+            if (tag_type != this->type()) throw std::runtime_error("Attempt to push value of wrong type to NBT list.");
             push_array_general<char>(itr, str_in);
-            count++;
         }
 
         template<tag_type_enum tag_type>
@@ -299,9 +292,8 @@ namespace melon::nbt
         requires is_nbt_array<tag_type> && is_nbt_type_match<std::add_pointer_t<V>, tag_type>
         void insert(const generic_iterator &itr, const std::array<V, N> &values)
         {
-            if (tag_type != this->type) throw std::runtime_error("Attempt to push value of wrong type to NBT list.");
+            if (tag_type != this->type()) throw std::runtime_error("Attempt to push value of wrong type to NBT list.");
             push_array_general<V>(itr, values);
-            count++;
         }
 
         template<tag_type_enum tag_type, class V = std::remove_pointer_t<tag_prim_t<tag_type>>, std::size_t N>
@@ -313,9 +305,8 @@ namespace melon::nbt
         requires is_nbt_array<tag_type> && is_nbt_type_match<std::add_pointer_t<V>, tag_type> && util::is_simple_iterable<C<V, N...>, V>
         void insert(const generic_iterator &itr, const C<V, N...> &values)
         {
-            if (tag_type != this->type) throw std::runtime_error("Attempt to push value of wrong type to NBT list.");
+            if (tag_type != this->type()) throw std::runtime_error("Attempt to push value of wrong type to NBT list.");
             push_array_general<V>(itr, values);
-            count++;
         }
 
         template<tag_type_enum tag_type, template<class, class...> class C = std::initializer_list, class V = std::remove_pointer_t<tag_prim_t<tag_type>>, class... N>
@@ -325,6 +316,9 @@ namespace melon::nbt
 
         void reserve(size_t count_in)
         { tags.reserve(count_in); }
+
+        [[nodiscard]] tag_type_enum type() const
+        { return type_v; }
 
         [[nodiscard]] size_t bytes() const
         { return byte_count_v; }
@@ -365,11 +359,14 @@ namespace melon::nbt
         void adjust_byte_count(int64_t by);
         void change_properties(container_property_args props);
 
+        void to_snbt(std::string &out) const;
+        char *to_binary(char *itr) const;
+
         template<typename V>
         void push_array_general(const generic_iterator &itr, const auto &values)
         {
             auto array_ptr = mem::pmr::make_unique<V[]>(pmr_rsrc, values.size() + (padding_size / sizeof(V)));
-            auto tag_ptr   = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type);
+            auto tag_ptr   = mem::pmr::make_unique<primitive_tag>(pmr_rsrc, type());
 
             tag_ptr->set_size(values.size());
             adjust_byte_count(tag_ptr->bytes({ .full_tag = false }));
@@ -383,7 +380,8 @@ namespace melon::nbt
             static_cast<void>(tag_ptr.release());
         }
 
-        tag_list_t tags;
+        const tag_type_enum type_v = tag_end;
+        tag_list_t          tags;
 
         uint16_t depth        = 0;
         size_t   byte_count_v = 0;

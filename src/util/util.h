@@ -48,11 +48,11 @@ namespace melon::util
         });
     }
 
-    template<auto src_endian = std::endian::big, typename T>
+    template<auto src_endian = std::endian::big, auto target_endian = std::endian::native, typename T>
     requires std::integral<T>
     T cvt_endian(T value)
     {
-        if constexpr (std::endian::native != src_endian)
+        if constexpr (target_endian != src_endian)
             value = std::byteswap(value);
 
         return value;
@@ -61,16 +61,24 @@ namespace melon::util
     // This function exists to handle a smaller data type being loaded into a larger data type (e.g. a 16 bit int read into a 64 bit int) via memcpy.
     // If endian conversion required a byte swap, the value will be in the upper (right) bytes of the data type. This will handle moving them into
     // the lower (left) bytes so a second memcpy of the smaller size or a union read will produce the appropriate value.
-    template<auto src_endian = std::endian::big, typename T>
+    template<auto src_endian = std::endian::big, auto target_endian = std::endian::native, typename T>
     requires std::integral<T>
     T inline pack_left(T value, uint16_t source_size)
     {
-        if constexpr (std::endian::native != src_endian)
+        if constexpr (target_endian != src_endian)
         {
-            if constexpr (src_endian == std::endian::big)
+            // We must have done a byteswap to get here
+
+            if constexpr (std::endian::native == std::endian::little)
+            {
+                // Byte swap put our value in the higher order bytes. Shift them right to lower order bytes to be lower in RAM.
                 value >>= ((sizeof(T) - source_size) << 3);
+            }
             else
+            {
+                // Byte swap put our value in the lower order bytes. Shift them left to higher order bytes to be lower in RAM.
                 value <<= ((sizeof(T) - source_size) << 3);
+            }
         }
 
         return value;

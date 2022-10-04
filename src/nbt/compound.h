@@ -18,7 +18,6 @@
 #include "util/util.h"
 #include "mem/pmr.h"
 
-// TODO: Add binary serialization
 // TODO: Add SNBT parsing
 // TODO: Region file support
 
@@ -393,6 +392,8 @@ namespace melon::nbt
         void to_snbt(std::string &out);
         std::unique_ptr<std::string> to_snbt();
 
+        std::pair<std::unique_ptr<char[]>, size_t> to_binary();
+
         [[nodiscard]] size_t bytes() const
         { return byte_count_v; }
 
@@ -425,6 +426,8 @@ namespace melon::nbt
         tag_list_t::iterator destroy_tag(const tag_list_t::iterator &itr);
         void destroy_tag(std::variant<compound *, list *, primitive_tag *> &tag_variant);
         void change_properties(container_property_args props);
+
+        char *to_binary(char *itr);
 
         template<tag_type_enum tag_type, class V = std::remove_pointer_t<tag_prim_t<tag_type>>>
         requires is_nbt_type_match<V *, tag_type> && is_nbt_array<tag_type>

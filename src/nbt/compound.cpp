@@ -221,7 +221,7 @@ namespace melon::nbt
             else if constexpr (std::is_same_v<decltype(tag), list *>)
                 return std::tuple{ std::string_view(*tag->name.get()), tag_list, tag_variant_t{ std::reference_wrapper(*tag) }};
             else if constexpr (std::is_same_v<decltype(tag), primitive_tag *>)
-                return std::tuple{ std::string_view(*tag->name), tag->tag_type, tag->get_generic() };
+                return std::tuple{ std::string_view(*tag->name), tag->type(), tag->get_generic() };
 
             std::unreachable();
         }, itr->second);
@@ -335,6 +335,72 @@ namespace melon::nbt
         return out;
     }
 
+    std::pair<std::unique_ptr<char[]>, size_t> compound::to_binary()
+    {
+        auto raw_ptr = std::make_unique<char[]>(bytes() + padding_size);
+        auto raw_buf = raw_ptr.get();
+
+        *raw_buf = static_cast<int8_t>(tag_compound);
+        raw_buf++;
+
+        if (name != nullptr && !name->empty())
+        {
+            auto len = util::cvt_endian<std::endian::little, std::endian::big>(static_cast<uint16_t>(name->size()));
+
+            std::memcpy(raw_buf, &len, sizeof(decltype(len)));
+            raw_buf += sizeof(decltype(len));
+
+            std::memcpy(raw_buf, name->data(), name->size()); // NOLINT(bugprone-not-null-terminated-result)
+            raw_buf += name->size();
+        }
+        else
+        {
+            uint16_t len = 0;
+
+            std::memcpy(raw_buf, &len, sizeof(decltype(len)));
+            raw_buf += sizeof(decltype(len));
+        }
+
+        to_binary(raw_buf);
+        return { std::move(raw_ptr), bytes() };
+    }
+
+    char *compound::to_binary(char *itr)
+    {
+        for (const auto &[tag_key, tag_variant] : tags)
+        {
+            auto &key = tag_key;
+            std::visit([&key, &itr](auto &tag) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(tag)>, compound *>)
+                    *itr = static_cast<int8_t>(tag_compound);
+                else if constexpr (std::is_same_v<std::decay_t<decltype(tag)>, list *>)
+                    *itr = static_cast<int8_t>(tag_list);
+                else
+                    *itr = static_cast<int8_t>(tag->type());
+
+                itr++;
+
+                if (!key.empty())
+                {
+                    auto len = util::cvt_endian<std::endian::little, std::endian::big>(static_cast<uint16_t>(key.size()));
+
+                    std::memcpy(itr, &len, sizeof(decltype(len)));
+                    itr += sizeof(decltype(len));
+
+                    std::memcpy(itr, key.data(), key.size()); // NOLINT(bugprone-not-null-terminated-result)
+                    itr += key.size();
+                }
+                else
+                    throw std::runtime_error("Found tag with no name while serializing NBT compound to binary.");
+
+                itr = tag->to_binary(itr);
+            }, tag_variant);
+        }
+
+        *itr = static_cast<int8_t>(tag_end);
+        return ++itr;
+    }
+
     std::pair<mem::pmr::unique_ptr<std::pmr::string>, mem::pmr::unique_ptr<primitive_tag>>
     compound::new_primitive(std::string_view tag_name, tag_type_enum tag_type, bool overwrite)
     {
@@ -370,7 +436,6 @@ namespace melon::nbt
             throw;
         }
 
-        count++;
         return *container.release();
     }
 
@@ -522,9 +587,9 @@ namespace melon::nbt
                     pmr_rsrc->deallocate(tag_ptr->name, sizeof(std::remove_pointer_t<decltype(tag_ptr->name)>), alignof(std::remove_pointer_t<decltype(tag_ptr->name)>));
                 }
 
-                if (tag_properties[tag_ptr->tag_type].category & (cat_array | cat_string) && tag_ptr->value.generic_ptr != nullptr)
-                    pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->size() * tag_properties[tag_ptr->tag_type].size + padding_size,
-                                         tag_properties[tag_ptr->tag_type].size);
+                if (tag_properties[tag_ptr->type()].category & (cat_array | cat_string) && tag_ptr->value.generic_ptr != nullptr)
+                    pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->size() * tag_properties[tag_ptr->type()].size + padding_size,
+                                         tag_properties[tag_ptr->type()].size);
             }
 
             std::destroy_at(tag_ptr);
@@ -550,7 +615,7 @@ namespace melon::nbt
         else if (std::holds_alternative<primitive_tag *>(value_in.second))
         {
             auto prim_ptr = std::get<primitive_tag *>(value_in.second);
-            return { std::string_view(value_in.first), prim_ptr->tag_type, prim_ptr->get_generic() };
+            return { std::string_view(value_in.first), prim_ptr->type(), prim_ptr->get_generic() };
         }
         else
             std::unreachable();
@@ -565,7 +630,7 @@ namespace melon::nbt
         else if (std::holds_alternative<primitive_tag *>(value_in.second))
         {
             auto prim_ptr = std::get<primitive_tag *>(value_in.second);
-            return { std::string_view(value_in.first), prim_ptr->tag_type, prim_ptr->get_generic() };
+            return { std::string_view(value_in.first), prim_ptr->type(), prim_ptr->get_generic() };
         }
         else
             std::unreachable();

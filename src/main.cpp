@@ -21,16 +21,17 @@ using namespace melon;
 
 int main()
 {
-    std::vector<char> gz_buffer;
-
     std::srand(std::time(nullptr));
     auto start = std::chrono::high_resolution_clock::now();
 
-    if (melon::util::file_to_vec(R"(E:/Games/Minecraft/Servers/Fabric/World/level.dat)", gz_buffer))
+    auto read_result = util::file_to_buf(R"(E:/Games/Minecraft/Servers/Fabric/World/level.dat)");
+    if (!read_result)
     {
         std::cerr << "Unable to load level.dat: " << strerror(errno) << std::endl;
         return 1;
     }
+
+    auto &&[gz_buffer, gz_buffer_size] = read_result.value();
 
     auto end = std::chrono::high_resolution_clock::now();
 
@@ -39,7 +40,7 @@ int main()
 
     start = std::chrono::high_resolution_clock::now();
 
-    auto [nbt_data_ptr, nbt_data_size] = util::gzip_inflate(gz_buffer);
+    auto [nbt_data_ptr, nbt_data_size] = util::gzip_inflate(std::move(gz_buffer), gz_buffer_size);
 
     end = std::chrono::high_resolution_clock::now();
     std::cout << "Successfully decompressed NBT data (" << nbt_data_size << " bytes)." << std::endl;
@@ -242,7 +243,7 @@ int main()
 
     {
         std::cout << "And a random repeat..." << std::endl;
-        auto &random_event = scheduled_events.at<nbt::tag_compound>(std::rand() % scheduled_events.count);
+        auto &random_event = scheduled_events.at<nbt::tag_compound>(std::rand() % scheduled_events.size());
         std::cout << "Scheduled Event " << random_event.find<nbt::tag_string>("Name").value() << " at " << random_event.find<nbt::tag_long>("TriggerTime").value() << std::endl;
     }
 
@@ -261,7 +262,7 @@ int main()
 
     {
         std::cout << "And a random repeat..." << std::endl;
-        auto random_event = scheduled_events.at(std::rand() % scheduled_events.count);
+        auto random_event = scheduled_events.at(std::rand() % scheduled_events.size());
         auto name_res     = std::get<nbt::tag_compound>(random_event).get().find("Name").value();
         auto ttime_res    = std::get<nbt::tag_compound>(random_event).get().find("TriggerTime").value();
         std::cout << "Scheduled Event " << std::get<nbt::tag_string>(std::get<2>(name_res))
@@ -312,6 +313,32 @@ int main()
     std::cout << "sizeof(void *): " << sizeof(void *) << std::endl;
 
     std::cout << "Modified level.dat size/depth prior to deletion: " << parsed_nbt->bytes() << "/" << parsed_nbt->get_tree_depth() << std::endl;
+
+    auto &&[binary_nbt_buf, binary_nbt_size] = parsed_nbt->to_binary();
+    auto &&[gzip_buf, gzip_buf_size] = util::gzip_deflate(std::move(binary_nbt_buf), binary_nbt_size);
+
+    std::string_view file_to_write = R"(E:/Games/Minecraft/Servers/Fabric/World/melon.dat)";
+    if (util::buf_to_file(file_to_write, std::move(gzip_buf), gzip_buf_size, std::ios::trunc))
+    {
+        std::cout << "Successfully wrote to file: " << file_to_write << std::endl;
+    }
+
+    {
+        auto read_result = util::file_to_buf(R"(E:/Games/Minecraft/Servers/Fabric/World/melon.dat)");
+        if (!read_result)
+        {
+            std::cerr << "Unable to load melon.dat: " << strerror(errno) << std::endl;
+            return 1;
+        }
+
+        auto &&[gz_buffer, gz_buffer_size] = read_result.value();
+        auto [nbt_data_ptr, nbt_data_size] = util::gzip_inflate(std::move(gz_buffer), gz_buffer_size);
+
+        auto parsed_nbt = nbt::compound(std::move(nbt_data_ptr), nbt_data_size);
+
+        std::cout << "Successfully parsed written NBT!" << std::endl;
+        std::cout << *parsed_nbt.to_snbt() << std::endl;
+    }
 
     mem::pmr::destroy_obj_using_pmr(recording_rsrc, parsed_nbt);
     std::cout << "Deleted parsed NBT." << std::endl;

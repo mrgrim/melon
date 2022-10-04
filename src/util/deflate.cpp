@@ -15,7 +15,7 @@
 namespace melon::util
 {
 
-    std::pair<std::unique_ptr<char[]>, size_t> gzip_inflate(const std::vector<char> &in, libdeflate_decompressor *d)
+    std::pair<std::unique_ptr<char[]>, size_t> gzip_inflate(std::unique_ptr<char[]> &&buf_ptr, size_t buf_size, libdeflate_decompressor *d)
     {
         if (d == nullptr)
             d = libdeflate_alloc_decompressor();
@@ -28,16 +28,16 @@ namespace melon::util
         // This can be misleading if the stream has multiple "members" or if the field overflows (>4GiB)
         // We're not handling either case for now
         uint32_t isize;
-        std::memcpy(static_cast<void *>(&isize), static_cast<const void *>(&in[in.size() - 4]), sizeof(isize));
+        std::memcpy(static_cast<void *>(&isize), static_cast<const void *>(&buf_ptr[buf_size - 4]), sizeof(isize));
         isize = cvt_endian<std::endian::little>(isize);
 
         if (isize == 0) isize               = 1;
-        if (isize > in.size() * 1023) isize = in.size() * 1023; // This is the largest DEFLATE can expand to
+        if (isize > buf_size * 1023) isize = buf_size * 1023; // This is the largest DEFLATE can expand to
 
         auto out_buf = std::make_unique<char[]>(isize + 8);
         size_t actual_size;
 
-        switch (libdeflate_gzip_decompress(d, static_cast<const void *>(in.data()), in.size(),
+        switch (libdeflate_gzip_decompress(d, static_cast<const void *>(buf_ptr.get()), buf_size,
                                            static_cast<void *>(out_buf.get()), isize, &actual_size))
         {
             case LIBDEFLATE_SHORT_OUTPUT:
@@ -58,9 +58,8 @@ namespace melon::util
         }
     }
 
-    // out.capacity() after this call is likely to be significantly larger than out.size(). It's up to the caller
-    // if they wish to perform a out.shrink_to_fit() call after.
-    void gzip_deflate(std::vector<char> &out, const std::vector<char> &in, libdeflate_compressor *c, int level)
+    // This over allocates, probably by a lot. It's expected that the contents will quickly be copied elsewhere and the buffer discarded by the caller.
+    std::pair<std::unique_ptr<char[]>, size_t> gzip_deflate(std::unique_ptr<char[]> &&buf_ptr, size_t buf_size, libdeflate_compressor *c, int level)
     {
         if (c == nullptr)
             c = libdeflate_alloc_compressor(level);
@@ -69,15 +68,14 @@ namespace melon::util
             [[unlikely]]
                     throw std::runtime_error("Failure to create compressor object while trying to compress to gzip buffer.");
 
-        out.reserve(libdeflate_gzip_compress_bound(c, in.size()));
-        out.push_back(0); // std::vector has been seen in the wild being lazy about allocating memory, force the issue
-
-        auto out_size = libdeflate_gzip_compress(c, static_cast<const void *>(in.data()), in.size(), static_cast<void *>(out.data()), out.size());
+        auto est_size = libdeflate_gzip_compress_bound(c, buf_size);
+        auto out = std::make_unique<char[]>(est_size);
+        auto out_size = libdeflate_gzip_compress(c, static_cast<const void *>(buf_ptr.get()), buf_size, static_cast<void *>(out.get()), est_size);
 
         if (out_size == 0)
             [[unlikely]]
                     throw std::runtime_error("Compression output size exceeded upper bound while trying to compress to gzip buffer.");
 
-        out.resize(out_size);
+        return { std::move(out), out_size };
     }
 }

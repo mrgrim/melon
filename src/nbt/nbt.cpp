@@ -9,7 +9,7 @@ namespace melon::nbt
 {
     tag_variant_t primitive_tag::get_generic()
     {
-        switch (tag_type)
+        switch (type())
         {
             case tag_byte:
                 return std::reference_wrapper<tag_access_t<tag_byte>>(value.tag_byte);
@@ -36,7 +36,7 @@ namespace melon::nbt
         }
     }
 
-    void primitive_tag::to_snbt(std::string &out)
+    void primitive_tag::to_snbt(std::string &out) const
     {
         // 3 = sign, decimal point, and nbt type indicator
         constexpr size_t buf_len = std::numeric_limits<double>::max_digits10 + std::numeric_limits<double>::max_exponent10 + 3;
@@ -48,12 +48,12 @@ namespace melon::nbt
             out.push_back(':');
         }
 
-        if (tag_properties[tag_type].category == cat_primitive)
+        if (tag_properties[type()].category == cat_primitive)
         {
             char                 suffix = 0;
             std::to_chars_result res{};
 
-            switch (tag_type)
+            switch (type())
             {
                 // @formatter:off
                 case tag_byte: res = std::to_chars(buf, buf + buf_len, value.tag_byte); suffix = 'b'; break;
@@ -74,10 +74,10 @@ namespace melon::nbt
             else
                 [[unlikely]] throw std::runtime_error("Error converting NBT primitive to string: " + std::make_error_code(res.ec).message());
         }
-        else if (tag_properties[tag_type].category == cat_array)
+        else if (tag_properties[type()].category == cat_array)
         {
             auto print_array = [this, &buf, &out](auto array_ptr, char suffix = 0) {
-                for (uint32_t idx = 0; idx < size_v; idx++)
+                for (int32_t idx = 0; idx < size_v; idx++)
                 {
                     if (auto [ptr, ec] = std::to_chars(buf, buf + buf_len, array_ptr[idx]); ec == std::errc())
                     {
@@ -91,7 +91,7 @@ namespace melon::nbt
                 }
             };
 
-            switch (tag_type)
+            switch (type())
             {
                 // @formatter:off
                 case tag_byte_array: out.append("[B;"); print_array(value.tag_byte_array, 'B'); break;
@@ -103,10 +103,63 @@ namespace melon::nbt
 
             out.push_back(']');
         }
-        else if (tag_properties[tag_type].category == cat_string)
+        else if (tag_properties[type()].category == cat_string)
         {
             auto view = std::string_view(value.tag_string, size_v);
             snbt::escape_string(view, out);
+        }
+    }
+
+    char *primitive_tag::to_binary(char *itr) const
+    {
+        switch (tag_properties[type()].category)
+        {
+            case cat_primitive:
+            {
+                auto value_prep = util::cvt_endian<std::endian::little, std::endian::big>(value.generic);
+                value_prep = util::pack_left<std::endian::little, std::endian::big>(value_prep, tag_properties[type()].size);
+
+                std::memcpy(itr, static_cast<void *>(&value_prep), tag_properties[type()].size);
+                itr += tag_properties[type()].size;
+
+                return itr;
+            }
+            case cat_string:
+            {
+                auto len = util::cvt_endian<std::endian::little, std::endian::big>(static_cast<uint16_t>(size()));
+
+                std::memcpy(itr, &len, sizeof(decltype(len)));
+                itr += sizeof(decltype(len));
+
+                std::memcpy(itr, value.tag_string, size());
+                itr += size();
+
+                return itr;
+            }
+            case cat_array:
+            {
+                auto count = util::cvt_endian<std::endian::little, std::endian::big>(static_cast<int32_t>(size()));
+
+                std::memcpy(itr, &count, sizeof(decltype(count)));
+                itr += sizeof(decltype(count));
+
+                for (int index = 0; index < size(); index++)
+                {
+                    uint64_t value_prep;
+
+                    std::memcpy(&value_prep, static_cast<char *>(value.generic_ptr) + (index * tag_properties[type()].size), sizeof(decltype(value_prep)));
+
+                    value_prep = util::cvt_endian<std::endian::little, std::endian::big>(value_prep);
+                    value_prep = util::pack_left<std::endian::little, std::endian::big>(value_prep, tag_properties[type()].size);
+
+                    std::memcpy(itr, &value_prep, tag_properties[type()].size);
+                    itr += tag_properties[type()].size;
+                }
+
+                return itr;
+            }
+            default:
+                std::unreachable();
         }
     }
 

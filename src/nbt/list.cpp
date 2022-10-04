@@ -15,7 +15,7 @@ namespace melon::nbt
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
               pmr_rsrc(std::visit([](auto &&tag) -> std::pmr::memory_resource * { return tag->pmr_rsrc; }, parent_in)),
               name(mem::pmr::make_unique<std::pmr::string>(pmr_rsrc, name_in)),
-              type(tag_type_in),
+              type_v(tag_type_in),
               tags(tag_list_t(pmr_rsrc))
     {
         std::visit([this](auto &&tag) {
@@ -34,7 +34,7 @@ namespace melon::nbt
               top(std::visit([](auto &&tag) -> compound * { return tag->top; }, parent_in)),
               pmr_rsrc(std::visit([](auto &&tag) -> std::pmr::memory_resource * { return tag->pmr_rsrc; }, parent_in)),
               name(std::move(name_in)),
-              type(tag_type_in),
+              type_v(tag_type_in),
               tags(tag_list_t(pmr_rsrc))
     {
         if (depth > 512)
@@ -78,12 +78,12 @@ namespace melon::nbt
         uint16_t ret = depth;
         uint16_t child_depth;
 
-        if (type == tag_list)
+        if (type() == tag_list)
         {
             for (const auto &itr: tags)
                 if ((child_depth = static_cast<list *>(itr)->get_tree_depth()) > ret) ret = child_depth;
         }
-        else if (type == tag_compound)
+        else if (type() == tag_compound)
         {
             for (const auto &itr: tags)
                 if ((child_depth = static_cast<compound *>(itr)->get_tree_depth()) > ret) ret = child_depth;
@@ -111,12 +111,12 @@ namespace melon::nbt
             max_bytes = props.new_max_bytes.value_or(max_bytes);
             top       = props.new_top.value_or(top);
 
-            if (type == tag_list)
+            if (type() == tag_list)
             {
                 for (const auto &itr: tags)
                     static_cast<list *>(itr)->change_properties(props);
             }
-            else if (type == tag_compound)
+            else if (type() == tag_compound)
             {
                 for (const auto &itr: tags)
                     static_cast<compound *>(itr)->change_properties(props);
@@ -151,21 +151,20 @@ namespace melon::nbt
                         pmr_rsrc->deallocate(tag_ptr->name, sizeof(std::remove_pointer_t<decltype(tag_ptr->name)>), alignof(std::remove_pointer_t<decltype(tag_ptr->name)>));
                     }
 
-                    if (tag_properties[type].category & (cat_array | cat_string) && tag_ptr->value.generic_ptr != nullptr)
-                        pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->size() * tag_properties[type].size + padding_size, tag_properties[type].size);
+                    if (tag_properties[type()].category & (cat_array | cat_string) && tag_ptr->value.generic_ptr != nullptr)
+                        pmr_rsrc->deallocate(tag_ptr->value.generic_ptr, tag_ptr->size() * tag_properties[type()].size + padding_size, tag_properties[type()].size);
                 }
 
                 std::destroy_at(tag_ptr);
                 pmr_rsrc->deallocate(tag_ptr, sizeof(T), alignof(T));
-                count--;
             }
 
             return generic_iterator(tags.erase(first.itr, last.itr), this);
         };
 
-        if (type == tag_list)
+        if (type() == tag_list)
             return clear_loop.template operator()<list>();
-        else if (type == tag_compound)
+        else if (type() == tag_compound)
             return clear_loop.template operator()<compound>();
         else
             return clear_loop.template operator()<primitive_tag>();
@@ -173,9 +172,9 @@ namespace melon::nbt
 
     tag_variant_t list::at(int idx)
     {
-        if (type == tag_compound)
+        if (type() == tag_compound)
             return std::reference_wrapper<compound>(*static_cast<compound *>(tags.at(idx)));
-        else if (type == tag_list)
+        else if (type() == tag_list)
             return std::reference_wrapper<list>(*static_cast<list *>(tags.at(idx)));
         else
         {
@@ -186,18 +185,20 @@ namespace melon::nbt
 
     char *list::read(char *itr, const char *const itr_end)
     {
-        static_assert(sizeof(count) == sizeof(int32_t));
         static_assert(sizeof(tag_type_enum) == sizeof(char));
 
         auto itr_start = itr;
 
-        count = read_var<int32_t>(itr);
+        auto count = read_var<int32_t>(itr);
+
         if (count < 0) [[unlikely]] throw std::runtime_error("Found list with negative length while parsing binary NBT data.");
+        if (type() == tag_end && count > 0) throw std::runtime_error("Found populated list with no type.");
+
         tags.reserve(count);
 
-        if (tag_properties[type].category & (cat_compound | cat_list))
+        if (tag_properties[type()].category & (cat_compound | cat_list))
         {
-            if (type == tag_list)
+            if (type() == tag_list)
             {
                 for (int32_t index = 0; index < count; index++)
                 {
@@ -210,7 +211,7 @@ namespace melon::nbt
                     tags.push_back(mem::pmr::make_obj_using_pmr<list>(pmr_rsrc, &itr, itr_end, this, mem::pmr::make_empty_unique<std::pmr::string>(pmr_rsrc), list_type));
                 }
             }
-            else if (type == tag_compound)
+            else if (type() == tag_compound)
             {
                 for (int32_t index = 0; index < count; index++)
                 {
@@ -221,24 +222,24 @@ namespace melon::nbt
                 }
             }
         }
-        else if (tag_properties[type].category == cat_primitive)
+        else if (tag_properties[type()].category == cat_primitive)
         {
             for (int32_t index = 0; index < count; index++)
             {
-                if ((itr + tag_properties[type].size + padding_size) >= itr_end)
+                if ((itr + tag_properties[type()].size + padding_size) >= itr_end)
                     [[unlikely]] throw std::runtime_error("Attempt to read past buffer while parsing binary NBT data.");
 
-                tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type, read_tag_primitive(&itr, type)));
+                tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type(), read_tag_primitive(&itr, type())));
             }
         }
-        else if (tag_properties[type].category & (cat_array | cat_string))
+        else if (tag_properties[type()].category & (cat_array | cat_string))
         {
-            if (type == tag_string)
+            if (type() == tag_string)
             {
                 for (int32_t index = 0; index < count; index++)
                 {
                     auto [str_ptr, str_len] = read_tag_string(&itr, itr_end, pmr_rsrc);
-                    tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type, std::bit_cast<uint64_t>(str_ptr.get()), nullptr, static_cast<size_t>(str_len)));
+                    tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type(), std::bit_cast<uint64_t>(str_ptr.get()), nullptr, static_cast<size_t>(str_len)));
                     static_cast<void>(str_ptr.release());
                 }
             }
@@ -246,10 +247,10 @@ namespace melon::nbt
             {
                 for (int32_t index = 0; index < count; index++)
                 {
-                    auto [array_ptr, array_len] = read_tag_array(&itr, itr_end, type, pmr_rsrc);
+                    auto [array_ptr, array_len] = read_tag_array(&itr, itr_end, type(), pmr_rsrc);
                     if (array_len < 0) [[unlikely]] throw std::runtime_error("Found array with negative length while parsing binary NBT data.");
 
-                    tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type, std::bit_cast<uint64_t>(array_ptr.get()), nullptr, static_cast<size_t>(array_len)));
+                    tags.push_back(mem::pmr::make_obj_using_pmr<primitive_tag>(pmr_rsrc, type(), std::bit_cast<uint64_t>(array_ptr.get()), nullptr, static_cast<size_t>(array_len)));
                     static_cast<void>(array_ptr.release());
                 }
             }
@@ -259,7 +260,7 @@ namespace melon::nbt
         return itr;
     }
 
-    void list::to_snbt(std::string &out)
+    void list::to_snbt(std::string &out) const
     {
         if (name != nullptr && !name->empty())
         {
@@ -269,9 +270,9 @@ namespace melon::nbt
 
         out.push_back('[');
 
-        if (count > 0 && type != tag_end)
+        if (!tags.empty() && type() != tag_end)
         {
-            auto process_entries = [&out]<typename T>(tag_list_t &vec) {
+            auto process_entries = [&out]<typename T>(const tag_list_t &vec) {
                 for (auto &tag: vec)
                 {
                     auto entry = static_cast<T *>(tag);
@@ -282,9 +283,9 @@ namespace melon::nbt
                 }
             };
 
-            if (type == tag_list)
+            if (type() == tag_list)
                 process_entries.template operator()<list>(tags);
-            else if (type == tag_compound)
+            else if (type() == tag_compound)
                 process_entries.template operator()<compound>(tags);
             else
                 process_entries.template operator()<primitive_tag>(tags);
@@ -293,6 +294,44 @@ namespace melon::nbt
         }
         else
             out.push_back(']');
+    }
+
+    char *list::to_binary(char *itr) const
+    {
+        if (!tags.empty() && type() != tag_end)
+        {
+            auto tag_type = type();
+
+            *itr = static_cast<int8_t>(tag_type);
+            itr++;
+
+            auto count = util::cvt_endian<std::endian::little, std::endian::big>(static_cast<int32_t>(tags.size()));
+            std::memcpy(itr, &count, sizeof(decltype(count)));
+            itr += sizeof(decltype(count));
+
+            auto process_entries = [&itr]<typename T>(const tag_list_t &vec) {
+                for (auto &tag: vec)
+                {
+                    auto entry = static_cast<T *>(tag);
+                    itr = entry->to_binary(itr);
+                }
+            };
+
+            if (tag_type == tag_list)
+                process_entries.template operator()<list>(tags);
+            else if (tag_type == tag_compound)
+                process_entries.template operator()<compound>(tags);
+            else
+                process_entries.template operator()<primitive_tag>(tags);
+        }
+        else
+        {
+            // Empty list, write tag_end ID and 0 count.
+            std::memset(itr, 0, sizeof(int8_t) + sizeof(int32_t));
+            itr += sizeof(int8_t) + sizeof(int32_t);
+        }
+
+        return itr;
     }
 
     // Circular dependency hell
